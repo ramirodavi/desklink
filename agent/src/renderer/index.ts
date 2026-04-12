@@ -1,4 +1,5 @@
 import { io, type Socket } from "socket.io-client";
+import type { ControlMsg } from "./protocol.js";
 
 declare global {
   interface Window {
@@ -6,8 +7,106 @@ declare global {
       getDesktopSources: () => Promise<{ id: string; name: string }[]>;
       applyControl: (json: string) => Promise<void>;
       notifySessionActive: () => Promise<void>;
+      readClipboard: () => Promise<string>;
+      writeClipboard: (text: string) => Promise<void>;
     };
   }
+}
+
+const CLIP_MAX_CHARS = 256 * 1024;
+const CLIP_POLL_MS = 500;
+const CLIP_SUPPRESS_MS = 450;
+
+let hostClipboardSync = false;
+let hostClipPollId: ReturnType<typeof setInterval> | null = null;
+/** Último texto conhecido no clipboard do OS (evita push duplicado). */
+let hostClipKnown = "";
+let hostClipSuppressUntil = 0;
+
+function clearHostClipboardPoll() {
+  if (hostClipPollId) {
+    clearInterval(hostClipPollId);
+    hostClipPollId = null;
+  }
+}
+
+function stopHostClipboardSync() {
+  hostClipboardSync = false;
+  clearHostClipboardPoll();
+  hostClipKnown = "";
+  hostClipSuppressUntil = 0;
+}
+
+function startHostClipboardPoll() {
+  clearHostClipboardPoll();
+  hostClipboardSync = true;
+  hostClipKnown = "";
+  hostClipSuppressUntil = 0;
+  hostClipPollId = setInterval(() => {
+    void (async () => {
+      if (!hostClipboardSync || !controlChannel || controlChannel.readyState !== "open") {
+        return;
+      }
+      if (Date.now() < hostClipSuppressUntil) return;
+      let text: string;
+      try {
+        text = await window.desklink.readClipboard();
+      } catch {
+        return;
+      }
+      if (text.length > CLIP_MAX_CHARS) {
+        text = text.slice(0, CLIP_MAX_CHARS);
+      }
+      if (text === hostClipKnown) return;
+      hostClipKnown = text;
+      controlChannel.send(
+        JSON.stringify({
+          t: "clip",
+          d: "push",
+          text,
+        } satisfies ControlMsg),
+      );
+    })();
+  }, CLIP_POLL_MS);
+}
+
+function setHostClipboardSync(enabled: boolean) {
+  if (!enabled) {
+    stopHostClipboardSync();
+    return;
+  }
+  startHostClipboardPoll();
+}
+
+async function applyClipSetFromClient(text: string) {
+  if (!hostClipboardSync) return;
+  let s = typeof text === "string" ? text : "";
+  if (s.length > CLIP_MAX_CHARS) s = s.slice(0, CLIP_MAX_CHARS);
+  await window.desklink.writeClipboard(s);
+  hostClipKnown = s;
+  hostClipSuppressUntil = Date.now() + CLIP_SUPPRESS_MS;
+}
+
+function routeControlChannelMessage(raw: string) {
+  let msg: ControlMsg;
+  try {
+    msg = JSON.parse(raw) as ControlMsg;
+  } catch {
+    void window.desklink.applyControl(raw);
+    return;
+  }
+  if (msg.t === "clip") {
+    if (msg.d === "sync") {
+      setHostClipboardSync(msg.enabled);
+      return;
+    }
+    if (msg.d === "set") {
+      void applyClipSetFromClient(msg.text);
+      return;
+    }
+    return;
+  }
+  void window.desklink.applyControl(raw);
 }
 
 const root = document.getElementById("root")!;
@@ -92,6 +191,7 @@ btnCopy.addEventListener("click", async () => {
 });
 
 function cleanupPeer() {
+  stopHostClipboardSync();
   controlChannel?.close();
   controlChannel = null;
   pendingIce = [];
@@ -261,7 +361,7 @@ btnShare.addEventListener("click", async () => {
   }
 
   try {
-    const base = serverUrlInput.value.trim() || defaultServer;
+    const base = serverUrlInput.value.trim();
     const iceServers = await fetchIceServers(base);
     const sources = await window.desklink.getDesktopSources();
     const first = sources[0];
@@ -307,7 +407,7 @@ btnShare.addEventListener("click", async () => {
       ordered: true,
     });
     controlChannel.onmessage = (ev) => {
-      void window.desklink.applyControl(String(ev.data));
+      routeControlChannelMessage(String(ev.data));
     };
 
     socket!.emit("webrtc-host-ready", { sessionId });

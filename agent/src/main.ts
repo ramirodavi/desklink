@@ -1,13 +1,23 @@
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, desktopCapturer, ipcMain, Notification } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  ipcMain,
+  Notification,
+} from "electron";
 import { applyControlJson } from "./control.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const iconPath = join(__dirname, "..", "build", "icon.png");
+
+/** Limite alinhado ao plano (texto clipboard). */
+const CLIPBOARD_MAX_CHARS = 256 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -65,4 +75,18 @@ ipcMain.handle("desklink-notify-session", () => {
     });
     n.show();
   }
+});
+
+ipcMain.handle("desklink-clipboard-read", () => {
+  try {
+    return clipboard.readText();
+  } catch {
+    return "";
+  }
+});
+
+ipcMain.handle("desklink-clipboard-write", (_e, text: unknown) => {
+  const s = typeof text === "string" ? text : "";
+  const clipped = s.length > CLIPBOARD_MAX_CHARS ? s.slice(0, CLIPBOARD_MAX_CHARS) : s;
+  clipboard.writeText(clipped);
 });

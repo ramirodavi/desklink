@@ -11,4 +11,7 @@ export type ControlMsg =
       alt: boolean;
       shift: boolean;
       meta: boolean;
-    };
+    }
+  | { t: "clip"; d: "sync"; enabled: boolean }
+  | { t: "clip"; d: "set"; text: string }
+  | { t: "clip"; d: "push"; text: string };

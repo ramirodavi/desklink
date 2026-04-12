@@ -84,14 +84,14 @@ cp server/.env.example server/.env
 |----------|-----|
 | `PORT` | Porta HTTP (padrão `3000`) |
 | `CLIENT_ORIGIN` | CORS: em produção use a origem real do controlador (ex. `https://desklink.seudominio.com`) ou `*` só em testes |
-| `METERED_DOMAIN` / `METERED_API_KEY` | TURN via [Metered](https://www.metered.ca/) — ver secção ICE abaixo |
+| `METERED_DOMAIN` / `METERED_API_KEY` | TURN via [Metered](https://www.metered.ca/) — ver seção ICE abaixo |
 | `ICE_SERVERS_JSON` | Lista ICE estática (se definida, **substitui** Metered) |
 
 **Não commite** `.env` com API keys reais. O `.env.example` está no repositório sem segredos.
 
 ### Windows: scripts na raiz
 
-| Ficheiro | Função |
+| Arquivo | Função |
 |----------|--------|
 | [desklink-server.bat](desklink-server.bat) | Instala dependências se precisar, compila client/server se faltar `dist`, inicia o servidor |
 | [desklink-build-agent.bat](desklink-build-agent.bat) | Build client + server + `npm run pack -w agent` → `agent/release/` (`DeskLinkHost-*-portable.exe`) |
@@ -101,7 +101,7 @@ cp server/.env.example server/.env
 
 ## ICE / TURN (obrigatório para internet / NAT diferente)
 
-Por defeito só existe **STUN** público (`stun.l.google.com`). Para dois PCs em redes diferentes, configure **TURN** (Metered ou lista estática).
+Por padrão só existe **STUN** público (`stun.l.google.com`). Para dois PCs em redes diferentes, configure **TURN** (Metered ou lista estática).
 
 ### Metered (recomendado)
 
@@ -156,7 +156,7 @@ O túnel mostra um URL **`https://….trycloudflare.com`**. Esse é o URL públi
 ```
 server/   Express + Socket.io, salas por UUID, relay SDP/ICE
 client/   Vite — controlador (vídeo, overlay, atalhos)
-agent/    Electron — captura de ecrã + @nut-tree-fork/nut-js (input)
+agent/    Electron — captura de tela + @nut-tree-fork/nut-js (input)
 ```
 
 ---
@@ -164,6 +164,7 @@ agent/    Electron — captura de ecrã + @nut-tree-fork/nut-js (input)
 ## Limitações
 
 - Pensado para **um par** host/controlador por sessão (UUID)
-- Sem chat nem transferência de ficheiros
-- Controlo pode falhar em prompts elevados (UAC) ou fora da sessão do utilizador no Windows
+- Sem chat nem transferência de arquivos
+- O controle pode falhar em prompts elevados (UAC) ou fora da sessão do usuário no Windows
 - Atalhos **Win+…** no controlador podem ser interceptados pelo SO local; o painel de **atalhos** envia comandos pelo DataChannel sem depender do teclado físico
+- **Área de transferência (opcional):** no controlador, o checkbox *Sincronizar área de transferência (texto)* liga a sincronização bidirecional de **texto** entre o seu PC e o host (desligado por padrão). O navegador pode pedir permissão para **ler** o clipboard. Tamanho máximo por envio ~256 KB. Trate dados sensíveis com cuidado (senhas, tokens).

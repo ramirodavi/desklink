@@ -43,6 +43,10 @@ app.innerHTML = `
     <div class="remote-toolbar">
       <span class="remote-toolbar-title">Área remota</span>
       <div class="remote-toolbar-actions">
+        <label class="clipboard-sync-label" title="Sincroniza texto entre este PC e o remoto. Pode pedir permissão de leitura da área de transferência ao navegador.">
+          <input type="checkbox" id="clipboardSync" />
+          Sincronizar área de transferência (texto)
+        </label>
         <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela">Focar na tela remota</button>
         <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia do navegador">Tela cheia</button>
       </div>
@@ -108,6 +112,16 @@ const remoteStage = $("#remoteStage") as HTMLDivElement;
 const btnFocusRemote = $("#btnFocusRemote") as HTMLButtonElement;
 const btnFullscreen = $("#btnFullscreen") as HTMLButtonElement;
 const shortcutPanel = $("#shortcutPanel");
+const clipboardSyncCheckbox = $("#clipboardSync") as HTMLInputElement;
+
+const CLIP_MAX_CHARS = 256 * 1024;
+const CLIP_POLL_MS = 500;
+let clientClipPollId: ReturnType<typeof setInterval> | null = null;
+/** Quando true, o usuário pediu sync; alinhado ao checkbox. */
+let clientClipboardSync = false;
+/** Último texto enviado ao host (evita reenvio). */
+let clientLastSentToHost = "";
+let clientSuppressAfterHostPush = 0;
 
 let socket: Socket | null = null;
 let pc: RTCPeerConnection | null = null;
@@ -152,7 +166,37 @@ async function fetchIceServers(base: string): Promise<RTCIceServer[]> {
   return (await res.json()) as RTCIceServer[];
 }
 
+function stopClientClipboardPollOnly() {
+  if (clientClipPollId) {
+    clearInterval(clientClipPollId);
+    clientClipPollId = null;
+  }
+}
+
+/** Para sync, notifica o host se necessário e repõe UI (desligar / desconectar). */
+function disableClientClipboardSync(notifyHost: boolean) {
+  stopClientClipboardPollOnly();
+  if (
+    notifyHost &&
+    controlSend &&
+    controlSend.readyState === "open" &&
+    clientClipboardSync
+  ) {
+    try {
+      const off: ControlMsg = { t: "clip", d: "sync", enabled: false };
+      controlSend.send(JSON.stringify(off));
+    } catch {
+      /* ignore */
+    }
+  }
+  clientClipboardSync = false;
+  clientLastSentToHost = "";
+  clientSuppressAfterHostPush = 0;
+  clipboardSyncCheckbox.checked = false;
+}
+
 function cleanupPeer() {
+  disableClientClipboardSync(true);
   controlSend?.close();
   controlSend = null;
   pendingIce = [];
@@ -215,6 +259,40 @@ btnFullscreen.addEventListener("click", async () => {
 document.addEventListener("fullscreenchange", () => {
   const fs = document.fullscreenElement === remoteStage;
   btnFullscreen.textContent = fs ? "Sair da tela cheia" : "Tela cheia";
+});
+
+clipboardSyncCheckbox.addEventListener("change", () => {
+  const on = clipboardSyncCheckbox.checked;
+  if (!on) {
+    disableClientClipboardSync(true);
+    return;
+  }
+  if (!controlSend || controlSend.readyState !== "open") {
+    clipboardSyncCheckbox.checked = false;
+    return;
+  }
+  clientClipboardSync = true;
+  clientLastSentToHost = "";
+  clientSuppressAfterHostPush = 0;
+  try {
+    const syn: ControlMsg = { t: "clip", d: "sync", enabled: true };
+    controlSend.send(JSON.stringify(syn));
+  } catch {
+    clipboardSyncCheckbox.checked = false;
+    clientClipboardSync = false;
+    return;
+  }
+  void navigator.clipboard
+    .readText()
+    .then((t) => {
+      let text = t;
+      if (text.length > CLIP_MAX_CHARS) {
+        text = text.slice(0, CLIP_MAX_CHARS);
+      }
+      clientLastSentToHost = text;
+    })
+    .catch(() => {});
+  startClientClipboardPoll();
 });
 
 shortcutPanel.addEventListener("click", (ev) => {
@@ -281,11 +359,65 @@ function sendMove(x: number, y: number) {
   controlSend.send(JSON.stringify(msg));
 }
 
+function handleClipboardMessageFromHost(raw: string) {
+  let msg: ControlMsg;
+  try {
+    msg = JSON.parse(raw) as ControlMsg;
+  } catch {
+    return;
+  }
+  if (msg.t !== "clip" || msg.d !== "push") return;
+  if (!clientClipboardSync) return;
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const clipped =
+    text.length > CLIP_MAX_CHARS ? text.slice(0, CLIP_MAX_CHARS) : text;
+  void navigator.clipboard.writeText(clipped).then(
+    () => {
+      clientLastSentToHost = clipped;
+      clientSuppressAfterHostPush = Date.now() + 450;
+    },
+    () => {
+      setConnStatus("Não foi possível escrever na área de transferência local.");
+    },
+  );
+}
+
+async function clientClipboardPollTick() {
+  if (!clientClipboardSync || !controlSend || controlSend.readyState !== "open") {
+    return;
+  }
+  if (Date.now() < clientSuppressAfterHostPush) return;
+  let text: string;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    return;
+  }
+  if (text.length > CLIP_MAX_CHARS) {
+    text = text.slice(0, CLIP_MAX_CHARS);
+  }
+  if (text === clientLastSentToHost) return;
+  clientLastSentToHost = text;
+  const setMsg: ControlMsg = { t: "clip", d: "set", text };
+  controlSend.send(JSON.stringify(setMsg));
+}
+
+function startClientClipboardPoll() {
+  stopClientClipboardPollOnly();
+  clientClipPollId = setInterval(() => {
+    void clientClipboardPollTick();
+  }, CLIP_POLL_MS);
+}
+
 function setupControlChannel(channel: RTCDataChannel) {
   controlSend = channel;
   channel.binaryType = "arraybuffer";
   let captureKeys = false;
   let lastNorm: { x: number; y: number } | null = null;
+
+  channel.onmessage = (ev) => {
+    handleClipboardMessageFromHost(String(ev.data));
+  };
 
   setConnStatus(
     "Canal de controle pronto. Clique na área remota para capturar teclado e mouse.",

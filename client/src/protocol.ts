@@ -13,4 +13,8 @@ export type ControlMsg =
       alt: boolean;
       shift: boolean;
       meta: boolean;
-    };
+    }
+  /** Sincronização de clipboard (texto); só o controlador envia `sync`. */
+  | { t: "clip"; d: "sync"; enabled: boolean }
+  | { t: "clip"; d: "set"; text: string }
+  | { t: "clip"; d: "push"; text: string };

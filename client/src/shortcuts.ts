@@ -100,7 +100,7 @@ export const SHORTCUT_SEQUENCES: Record<string, ControlMsg[]> = {
     k("ShiftLeft", false, { ctrl: true }),
     k("ControlLeft", false),
   ],
-  /** Pode não abrir o ecrã de segurança real — depende do Windows/nut-js */
+  /** Pode não abrir a tela de segurança real — depende do Windows/nut-js */
   ctrlAltDel: [
     k("ControlLeft", true),
     k("AltLeft", true, { ctrl: true }),

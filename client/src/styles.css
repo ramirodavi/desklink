@@ -252,6 +252,25 @@ button.btn-ghost:hover:not(:disabled) {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+  align-items: center;
+}
+
+.clipboard-sync-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #c5d0e6;
+  cursor: pointer;
+  user-select: none;
+}
+
+.clipboard-sync-label input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .shortcut-panel {
