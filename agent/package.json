@@ -1,0 +1,29 @@
+{
+  "name": "@desklink/agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeskLink host — captura de tela e controle local",
+  "author": "DeskLink",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "postinstall": "electron-rebuild -f -w @nut-tree-fork/libnut",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:preload": "esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
+    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=esm",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer && node scripts/copy-html.mjs",
+    "dev": "npm run build && electron .",
+    "pack": "npm run build && electron-builder --win portable --x64"
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "31.7.7",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.2"
+  }
+}

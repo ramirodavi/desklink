@@ -1,0 +1,23 @@
+appId: com.desklink.host
+productName: DeskLinkHost
+copyright: Copyright © DeskLink
+electronVersion: 31.7.7
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+
+win:
+  icon: build/icon.png
+  target:
+    - portable
+  artifactName: "${productName}-${version}-portable.${ext}"
+  # Evita baixar/extrair winCodeSign (symlinks exigem privilégios em alguns ambientes Windows)
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
