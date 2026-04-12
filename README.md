@@ -1,12 +1,50 @@
 # DeskLink
 
-Acesso remoto em tempo real entre dois PCs: **host** com app **Electron** (Windows, portátil) e **controlador** no **navegador**. A sinalização usa **Socket.io**; vídeo e controle (mouse/teclado) usam **WebRTC** (mídia + DataChannel).
+Acesso remoto em tempo real: um PC **compartilha a tela** e o outro **vê e controla** pelo navegador. O vídeo e os comandos (mouse, teclado, clipboard opcional) trafegam em **WebRTC**; um **servidor Node** só coordena quem entra na sessão e troca as mensagens iniciais (sinalização).
 
-| | |
-|---|---|
-| **Host** | App `DeskLinkHost-*-portable.exe` — compartilha a tela e recebe comandos |
-| **Controlador** | Qualquer navegador moderno na mesma URL pública do seu servidor DeskLink |
-| **Servidor** | Node (Express + Socket.io) — salas por UUID, troca de SDP/ICE |
+---
+
+## Arquitetura em três partes
+
+| Pacote | O que é | Tecnologias principais |
+|--------|---------|-------------------------|
+| **`server/`** | Processo que fica **sempre acessível na rede** (VPS, seu PC com IP/túnel, etc.). Junta host e controlador na “sala” da sessão, repassa SDP/ICE e serve a **API** de servidores ICE. | **Node.js**, **Express** (HTTP + arquivos estáticos do controlador em produção), **Socket.io** (WebSocket com fallback). |
+| **`client/`** | **Página web** do controlador: vídeo remoto, captura de mouse/teclado no overlay, atalhos. Não instala nada no PC de quem só assiste. | **Vite**, **TypeScript**, **socket.io-client**, WebRTC (`RTCPeerConnection`). |
+| **`agent/`** | **App desktop** no Windows (Electron) que roda no PC a ser controlado: captura de tela e injeção de entrada no SO. | **Electron** (`desktopCapturer`, janela), **nut-js** (fork) para mouse/teclado. |
+
+**Por que não é “só um site”?** O navegador não pode, sozinho, capturar o monitor inteiro de forma estável no cenário host nem injetar entrada no sistema como um app nativo — por isso o host usa **Electron**. O controlador pode ser só navegador porque só precisa **reproduzir** o stream e **enviar** eventos.
+
+**Sinalização vs mídia:** **Socket.io** leva mensagens pequenas e rápidas (ofertas/respostas SDP, candidatos ICE, “quem entrou na sala”). O **vídeo** e o **canal de controle** usam WebRTC **entre os dois PCs** (peer-to-peer), não passam pelo Express byte a byte. O servidor precisa estar no ar para os dois **se encontrarem** e **negociarem** essa conexão.
+
+Fluxo geral (sinalização pelo servidor; mídia direta entre peers ou relay TURN quando necessário):
+
+```mermaid
+flowchart TB
+  S[("Servidor DeskLink\nNode · Express · Socket.io")]
+  C[("Controlador\nnavegador · client/")]
+  A[("Host\nWindows · agent/ · Electron")]
+
+  C <-->|Socket.io — sala UUID, SDP, ICE| S
+  A <-->|Socket.io — sala UUID, SDP, ICE| S
+  C -->|GET /api/ice-servers| S
+  A -->|GET /api/ice-servers| S
+
+  C <-.->|WebRTC — vídeo e canal de controle\nentre os dois PCs| A
+```
+
+A linha tracejada é o caminho de **mídia WebRTC** (em muitos cenários P2P; se NAT/firewall impedirem, o tráfego pode ir **via TURN**, ainda sem passar pelo processo Node do DeskLink).
+
+---
+
+## O que precisa existir na internet (visão geral)
+
+Para **dois computadores em redes diferentes** conseguirem sessão:
+
+1. **Um URL público** onde o **servidor DeskLink** responda (HTTP + Socket.io + `/api`). Host e controlador usam **o mesmo endereço base** (ex.: `https://desklink.exemplo.com` ou URL do túnel).
+2. **Servidores ICE** (STUN e, na prática, **TURN** entre redes/NAT). O cliente e o agent obtêm a lista em **`GET /api/ice-servers`**. Sem TURN, muitas combinações de NAT/firewall **não** estabelecem vídeo — por isso o projeto integra **Metered** ou lista estática via env.
+3. **Túnel (opcional)** se você não tiver VPS nem IP público: **Cloudflare Tunnel**, **ngrok**, etc. expõem o `localhost:3000`; o URL gerado vira o “servidor” para host e controlador.
+
+Nada disso substitui **você** hospedar ou expor o processo Node; o repositório só fornece o código desse servidor e dos clientes.
 
 ---
 
@@ -32,14 +70,14 @@ npm install
 
 ## Desenvolvimento local
 
-**Terminal 1** — API + UI estática (em dev o Vite faz proxy para o servidor):
+**Terminal 1** — API + UI (em dev o Vite faz proxy para o servidor):
 
 ```bash
 npm run dev
 ```
 
 - **API / Socket.io:** `http://localhost:3000`
-- **Controlador (Vite):** `http://localhost:5173` — use esta URL no navegador; o proxy encaminha `/api` e `/socket.io` para a porta 3000
+- **Controlador (Vite):** `http://localhost:5173` — use no navegador; o proxy encaminha `/api` e `/socket.io` para a porta 3000
 
 **Terminal 2** — app host (Electron):
 
@@ -50,31 +88,21 @@ npm run dev -w agent
 ### Fluxo recomendado (ordem importa)
 
 1. **Servidor** rodando (`npm run dev`).
-2. **Host (Electron):** cole o **URL do servidor** (em dev: `http://localhost:3000` ou o que o status indicar), aguarde **Conectado**, copie o **código UUID** e clique em **Iniciar compartilhamento** (escolha a tela se o sistema pedir).
-3. **Controlador (navegador):** mesmo **URL do servidor**, mesmo **código da sessão**, **Conectar**.  
-   O controlador só entra se o host já tiver **iniciado o compartilhamento**; não há popup de “permitir acesso” no host — o ato de compartilhar já autoriza a sessão.
+2. **Host (Electron):** informe o **URL do servidor** (em dev: `http://localhost:3000`), aguarde **Conectado**, copie o **código UUID** e **Iniciar compartilhamento**.
+3. **Controlador (navegador):** mesmo **URL do servidor**, mesmo **código**, **Conectar**. O controlador só entra se o host já tiver iniciado o compartilhamento.
 
 ---
 
 ## Produção (servir UI + API)
 
-Compila **client**, **server** e **agent** (código):
-
 ```bash
 npm run build
-```
-
-Sobe só o servidor (serve `client/dist` e `/api`):
-
-```bash
 npm run start -w server
 ```
 
-Abra `http://localhost:3000` (ou o host/porta configurados). O controlador usa **a mesma origem** do servidor em produção.
+O servidor entrega `client/dist` e a API. Abra `http://localhost:3000` (ou host/porta do `.env`). Em produção, controle e API costumam compartilhar a **mesma origem** (evita problemas de CORS).
 
 ### Variáveis de ambiente (`server/.env`)
-
-Copie o exemplo e ajuste:
 
 ```bash
 cp server/.env.example server/.env
@@ -83,29 +111,38 @@ cp server/.env.example server/.env
 | Variável | Uso |
 |----------|-----|
 | `PORT` | Porta HTTP (padrão `3000`) |
-| `CLIENT_ORIGIN` | CORS: em produção use a origem real do controlador (ex. `https://desklink.seudominio.com`) ou `*` só em testes |
-| `METERED_DOMAIN` / `METERED_API_KEY` | TURN via [Metered](https://www.metered.ca/) — ver seção ICE abaixo |
+| `CLIENT_ORIGIN` | CORS: em produção, origem real do controlador (ex. `https://desklink.seudominio.com`) ou `*` só em testes |
+| `METERED_DOMAIN` / `METERED_API_KEY` | TURN via [Metered](https://www.metered.ca/) — ver seção ICE |
 | `ICE_SERVERS_JSON` | Lista ICE estática (se definida, **substitui** Metered) |
 
-**Não commite** `.env` com API keys reais. O `.env.example` está no repositório sem segredos.
+Não faça commit de `.env` com chaves reais.
 
-### Windows: scripts na raiz
+### Scripts Windows (raiz)
 
 | Arquivo | Função |
-|----------|--------|
-| [desklink-server.bat](desklink-server.bat) | Instala dependências se precisar, compila client/server se faltar `dist`, inicia o servidor |
+|---------|--------|
+| [desklink-server.bat](desklink-server.bat) | Dependências, compila client/server se faltar `dist`, sobe o servidor |
 | [desklink-build-agent.bat](desklink-build-agent.bat) | Build client + server + `npm run pack -w agent` → `agent/release/` (`DeskLinkHost-*-portable.exe`) |
 | [desklink-tunnel.bat](desklink-tunnel.bat) | (Opcional) Túnel Cloudflare para expor `localhost:3000` |
 
 ---
 
-## ICE / TURN (obrigatório para internet / NAT diferente)
+## ICE / STUN / TURN (tráfego WebRTC na internet)
 
-Por padrão só existe **STUN** público (`stun.l.google.com`). Para dois PCs em redes diferentes, configure **TURN** (Metered ou lista estática).
+**ICE** (*Interactive Connectivity Establishment*) é o **procedimento** que o WebRTC usa para descobrir **como** dois programas podem trocar dados na rede: testa caminhos (IPs/portas) até achar um que funcione atrás de NAT e firewall. A “lista de servidores” que ajudam nessa descoberta é a configuração **ICE** — no DeskLink ela vem do endpoint `GET /api/ice-servers`.
+
+Dois tipos de servidor costumam aparecer nessa lista:
+
+| Sigla | Nome (inglês) | Função em uma frase |
+|-------|----------------|----------------------|
+| **STUN** | *Session Traversal Utilities for NAT* | Responde “qual é o meu endereço visto da internet?” para que os peers tentem ligar **direto** um ao outro sem passar o vídeo por um intermediário. |
+| **TURN** | *Traversal Using Relays around NAT* | Quando a ligação direta **não** é possível, os dois lados mandam o tráfego **por esse servidor**, que faz de ponte (relay). É mais pesado e por isso normalmente exige credenciais ou serviço pago. |
+
+Em resumo: **STUN** tenta P2P; **TURN** garante conectividade quando o P2P falha. O DeskLink já usa um **STUN** público por padrão; para dois PCs em redes diferentes, na prática é **necessário** configurar **TURN** (Metered ou `ICE_SERVERS_JSON` abaixo).
 
 ### Metered (recomendado)
 
-1. Crie uma app em [Metered](https://www.metered.ca/), copie o **domínio** (ex. `desklink.metered.live`) e a **API Key**.
+1. Crie um app em [Metered](https://www.metered.ca/), copie **domínio** e **API Key**.
 2. Em `server/.env`:
 
 ```env
@@ -113,11 +150,11 @@ METERED_DOMAIN=desklink.metered.live
 METERED_API_KEY=sua_chave_aqui
 ```
 
-O servidor expõe `GET /api/ice-servers` com credenciais em cache curto.
+O endpoint `GET /api/ice-servers` devolve as credenciais (com cache curto).
 
 ### Lista estática (`ICE_SERVERS_JSON`)
 
-Se definir `ICE_SERVERS_JSON` no ambiente, **ignora** Metered. Exemplo (PowerShell):
+Se definir no ambiente, **substitui** Metered. Exemplo (PowerShell):
 
 ```powershell
 $env:ICE_SERVERS_JSON='[{"urls":["turn:turn.example.com:3478"],"username":"u","credential":"p"}]'
@@ -125,46 +162,34 @@ $env:ICE_SERVERS_JSON='[{"urls":["turn:turn.example.com:3478"],"username":"u","c
 
 ---
 
-## Túnel gratuito (sem IP público)
+## Túnel (sem IP público / sem abrir porta)
 
-Se o provedor usa **CGNAT** ou não dá para abrir porta, exponha o DeskLink com **Cloudflare Quick Tunnel** (grátis, sem cartão).
+Se houver **CGNAT** ou impossibilidade de abrir porta, use **Cloudflare Quick Tunnel** ou similar para publicar o processo local.
 
-### 1. Instalar `cloudflared` (uma vez no Windows)
+1. Baixe [cloudflared](https://github.com/cloudflare/cloudflared/releases) (`cloudflared-windows-amd64.exe`), renomeie para `cloudflared.exe` na raiz do repo.
+2. Uma janela: [desklink-server.bat](desklink-server.bat) (`http://localhost:3000`).
+3. Outra: [desklink-tunnel.bat](desklink-tunnel.bat) ou `cloudflared tunnel --url http://localhost:3000`.
 
-1. [Releases cloudflared](https://github.com/cloudflare/cloudflared/releases) → baixe **`cloudflared-windows-amd64.exe`**.
-2. Renomeie para **`cloudflared.exe`** e coloque na **raiz** do repositório (junto a `desklink-tunnel.bat`).
+O URL `https://….trycloudflare.com` é o endereço **público** — use no controlador e no campo do servidor do host (sem barra final). URLs gratuitas podem **mudar** a cada execução. **Metered** continua recomendado para WebRTC entre redes diferentes.
 
-### 2. Dois processos em paralelo
-
-- Janela A: [desklink-server.bat](desklink-server.bat) (servidor em `http://localhost:3000`).
-- Janela B: [desklink-tunnel.bat](desklink-tunnel.bat) — ou manualmente:  
-  `cloudflared tunnel --url http://localhost:3000`
-
-O túnel mostra um URL **`https://….trycloudflare.com`**. Esse é o URL público: use-o no **controlador** e no **campo do servidor do host** (sem barra no final).
-
-### 3. Observações
-
-- Cada reinício do túnel pode gerar **URL nova** (plano gratuito).
-- Na primeira visita pode aparecer página intersticial da Cloudflare — continue.
-- Alternativa: [ngrok](https://ngrok.com/) (`ngrok http 3000`).
-- **Metered** (`METERED_*` no `.env`) continua recomendado para WebRTC entre redes diferentes.
+Alternativa: [ngrok](https://ngrok.com/) (`ngrok http 3000`).
 
 ---
 
-## Estrutura do repositório
+## Pastas do repositório
 
-```
-server/   Express + Socket.io, salas por UUID, relay SDP/ICE
-client/   Vite — controlador (vídeo, overlay, atalhos)
-agent/    Electron — captura de tela + @nut-tree-fork/nut-js (input)
-```
+| Pasta | Conteúdo |
+|-------|----------|
+| `server/` | Entrada HTTP, Socket.io, salas por UUID, relay de sinalização, `GET /api/ice-servers` |
+| `client/` | SPA do controlador: vídeo, overlay de entrada, atalhos, sync opcional de clipboard |
+| `agent/` | Processo principal Electron, preload, renderer do host, `electron-builder` para `.exe` portátil |
 
 ---
 
 ## Limitações
 
-- Pensado para **um par** host/controlador por sessão (UUID)
-- Sem chat nem transferência de arquivos
-- O controle pode falhar em prompts elevados (UAC) ou fora da sessão do usuário no Windows
-- Atalhos **Win+…** no controlador podem ser interceptados pelo SO local; o painel de **atalhos** envia comandos pelo DataChannel sem depender do teclado físico
-- **Área de transferência (opcional):** no controlador, o checkbox *Sincronizar área de transferência (texto)* liga a sincronização bidirecional de **texto** entre o seu PC e o host (desligado por padrão). O navegador pode pedir permissão para **ler** o clipboard. Tamanho máximo por envio ~256 KB. Trate dados sensíveis com cuidado (senhas, tokens).
+- **Um par** host/controlador por sessão (UUID).
+- Sem chat nem transferência de arquivos.
+- Controle pode falhar em prompts elevados (UAC) ou fora da sessão do usuário no Windows.
+- Atalhos **Win+…** no controlador podem ser interceptados pelo SO local; o painel de atalhos envia sequências pelo DataChannel.
+- **Clipboard (opcional):** checkbox no controlador; só texto; ~256 KB por envio; desligado por padrão; navegador pode pedir permissão de leitura; trate senhas/tokens com cuidado.
