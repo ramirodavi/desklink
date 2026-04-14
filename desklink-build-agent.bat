@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 if not exist "node_modules\" (
-  echo [1/4] npm install...
+echo [1/5] npm install...
   call npm install
   if errorlevel 1 (
     echo [ERRO] npm install falhou.
@@ -38,7 +38,7 @@ if not exist "node_modules\" (
   echo.
 )
 
-echo [2/4] npm run build -w client
+echo [2/5] npm run build -w client
 call npm run build -w client
 if errorlevel 1 (
   echo [ERRO] Build do client falhou.
@@ -46,7 +46,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/4] npm run build -w server
+echo [3/5] npm run build -w server
 call npm run build -w server
 if errorlevel 1 (
   echo [ERRO] Build do server falhou.
@@ -54,7 +54,30 @@ if errorlevel 1 (
 )
 echo.
 
-echo [4/4] npm run pack -w agent ^(pode levar varios minutos^)...
+echo [4/5] preparar icone do agent
+if exist "agent\build\icon-wide-backup.png" (
+  echo     - restaurando icon-wide-backup.png ^> icon.png
+  copy /y "agent\build\icon-wide-backup.png" "agent\build\icon.png" >nul
+  if errorlevel 1 (
+    echo [ERRO] Falha ao restaurar icon-wide-backup.png.
+    goto :FIM_ERRO
+  )
+  if exist "agent\scripts\crop-icon-banner.mjs" (
+    echo     - executando recorte automatico do icone
+    call node "agent\scripts\crop-icon-banner.mjs"
+    if errorlevel 1 (
+      echo [ERRO] Recorte de icone falhou.
+      goto :FIM_ERRO
+    )
+  ) else (
+    echo     - script de recorte nao encontrado, mantendo icon.png restaurado.
+  )
+) else (
+  echo     - backup largo nao encontrado, mantendo icon.png atual.
+)
+echo.
+
+echo [5/5] npm run pack -w agent ^(pode levar varios minutos^)...
 call npm run pack -w agent
 if errorlevel 1 (
   echo [ERRO] Pack do agent falhou.

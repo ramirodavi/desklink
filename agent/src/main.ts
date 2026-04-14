@@ -1,5 +1,5 @@
 import { join, dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   app,
@@ -7,27 +7,233 @@ import {
   clipboard,
   desktopCapturer,
   ipcMain,
+  nativeImage,
   Notification,
+  screen,
 } from "electron";
-import { applyControlJson } from "./control.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const iconPath = join(__dirname, "..", "build", "icon.png");
+/** Windows: preferir .ico (vários tamanhos); PNG como fallback */
+const iconIcoPath = join(__dirname, "..", "build", "icon.ico");
+const iconPngPath = join(__dirname, "..", "build", "icon.png");
+
+/**
+ * Buffer + createFromBuffer: funciona com ficheiros dentro do app.asar;
+ * createFromPath falha por vezes no Windows quando o caminho aponta para o asar.
+ */
+function loadWindowIcon(): Electron.NativeImage | undefined {
+  const tryFile = (p: string) => {
+    if (!existsSync(p)) return undefined;
+    try {
+      const buf = readFileSync(p);
+      const img = nativeImage.createFromBuffer(buf);
+      return img.isEmpty() ? undefined : img;
+    } catch {
+      return undefined;
+    }
+  };
+  return tryFile(iconIcoPath) ?? tryFile(iconPngPath);
+}
+
+const windowIcon = loadWindowIcon();
 
 /** Limite alinhado ao plano (texto clipboard). */
 const CLIPBOARD_MAX_CHARS = 256 * 1024;
+const SPLASH_FALLBACK_MS = 10000;
 
 let mainWindow: BrowserWindow | null = null;
+let splashWindow: BrowserWindow | null = null;
+let splashFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+type ControlModule = typeof import("./control.js");
+let controlModulePromise: Promise<ControlModule> | null = null;
+
+function loadControlModule(): Promise<ControlModule> {
+  if (!controlModulePromise) {
+    controlModulePromise = import("./control.js");
+  }
+  return controlModulePromise;
+}
+
+function clearSplashFallback() {
+  if (splashFallbackTimer) {
+    clearTimeout(splashFallbackTimer);
+    splashFallbackTimer = null;
+  }
+}
+
+function closeSplashWindow() {
+  clearSplashFallback();
+  if (!splashWindow) return;
+  if (!splashWindow.isDestroyed()) {
+    splashWindow.close();
+  }
+  splashWindow = null;
+}
+
+function createSplashWindow() {
+  closeSplashWindow();
+  const splashIconDataUrl = windowIcon?.toDataURL() ?? "";
+  splashWindow = new BrowserWindow({
+    width: 360,
+    height: 230,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    movable: false,
+    alwaysOnTop: true,
+    backgroundColor: "#0d1528",
+    ...(windowIcon ? { icon: windowIcon } : {}),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  const splashHtml = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>DeskLink</title>
+  <style>
+    :root {
+      --bg-a: #0c1222;
+      --bg-b: #101a31;
+      --ink: #eef4ff;
+      --muted: #b4c3e6;
+      --accent: #4f8ff7;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at 25% 20%, rgba(79, 143, 247, 0.22), transparent 38%),
+                  radial-gradient(circle at 78% 78%, rgba(89, 189, 255, 0.18), transparent 42%),
+                  linear-gradient(160deg, var(--bg-a), var(--bg-b));
+      overflow: hidden;
+    }
+    .wrap {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      transform: translateY(-2px);
+    }
+    .logo-shell {
+      width: 78px;
+      height: 78px;
+      border-radius: 20px;
+      display: grid;
+      place-items: center;
+      position: relative;
+      background: rgba(17, 28, 52, 0.62);
+      border: 1px solid rgba(168, 203, 255, 0.24);
+      box-shadow: 0 16px 35px rgba(0, 0, 0, 0.35);
+      animation: floatY 2.6s ease-in-out infinite;
+    }
+    .logo-shell::before {
+      content: "";
+      position: absolute;
+      inset: -7px;
+      border-radius: 24px;
+      border: 2px solid rgba(79, 143, 247, 0.38);
+      animation: halo 1.9s ease-out infinite;
+    }
+    .logo {
+      width: 52px;
+      height: 52px;
+      object-fit: contain;
+      filter: drop-shadow(0 6px 12px rgba(79, 143, 247, 0.35));
+      animation: pulseLogo 1.4s ease-in-out infinite;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      margin-top: 4px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+    .bar {
+      width: 224px;
+      height: 7px;
+      border-radius: 999px;
+      background: rgba(122, 149, 203, 0.25);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .bar > span {
+      display: block;
+      width: 42%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(79, 143, 247, 0.35), rgba(79, 143, 247, 0.95));
+      animation: loadMove 1s ease-in-out infinite;
+    }
+    @keyframes loadMove {
+      0% { transform: translateX(-80%); }
+      100% { transform: translateX(260%); }
+    }
+    @keyframes pulseLogo {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+    }
+    @keyframes halo {
+      0% { opacity: 0.7; transform: scale(0.94); }
+      70% { opacity: 0; transform: scale(1.08); }
+      100% { opacity: 0; transform: scale(1.08); }
+    }
+    @keyframes floatY {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-4px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="logo-shell">
+        <img class="logo" src="${splashIconDataUrl}" alt="" />
+      </div>
+      <div class="title">DeskLink Host</div>
+      <div class="subtitle">Inicializando aplicação...</div>
+      <div class="bar" aria-hidden="true"><span></span></div>
+    </div>
+  </div>
+</body>
+</html>`;
+  void splashWindow.loadURL(
+    `data:text/html;charset=UTF-8,${encodeURIComponent(splashHtml)}`,
+  );
+  splashFallbackTimer = setTimeout(() => {
+    closeSplashWindow();
+    mainWindow?.show();
+  }, SPLASH_FALLBACK_MS);
+}
 
 function createWindow() {
+  createSplashWindow();
   mainWindow = new BrowserWindow({
     width: 480,
     height: 720,
     minWidth: 380,
     minHeight: 560,
-    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    show: false,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     webPreferences: {
       // CommonJS (.cjs): preload ESM falha com sandbox e window.desklink fica undefined
       preload: join(__dirname, "preload.cjs"),
@@ -35,6 +241,31 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  if (windowIcon) {
+    const applyIcon = () => mainWindow?.setIcon(windowIcon);
+    mainWindow.once("ready-to-show", applyIcon);
+    mainWindow.webContents.once("did-finish-load", applyIcon);
+  }
+
+  mainWindow.once("ready-to-show", () => {
+    closeSplashWindow();
+    mainWindow?.show();
+    // A UI aparece primeiro; o módulo de input pesado carrega depois.
+    setTimeout(() => {
+      void loadControlModule().catch(() => {});
+    }, 0);
+  });
+
+  mainWindow.webContents.once("did-fail-load", () => {
+    closeSplashWindow();
+    mainWindow?.show();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+    closeSplashWindow();
   });
 
   void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
@@ -53,17 +284,58 @@ app.on("window-all-closed", () => {
 });
 
 ipcMain.handle("desktop-sources", async () => {
+  const displays = screen.getAllDisplays();
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
     thumbnailSize: { width: 1, height: 1 },
     fetchWindowIcons: false,
   });
-  return sources.map((s) => ({ id: s.id, name: s.name }));
+  return sources.map((s) => {
+    const displayId = Number.parseInt(s.display_id, 10);
+    const display = Number.isFinite(displayId)
+      ? displays.find((d) => d.id === displayId)
+      : undefined;
+    return {
+      id: s.id,
+      name: s.name,
+      displayId: Number.isFinite(displayId) ? displayId : null,
+      bounds: display
+        ? {
+            x: display.bounds.x,
+            y: display.bounds.y,
+            width: display.bounds.width,
+            height: display.bounds.height,
+          }
+        : null,
+    };
+  });
 });
 
 ipcMain.handle("apply-control", async (_e, json: string) => {
-  await applyControlJson(json);
+  const mod = await loadControlModule();
+  await mod.applyControlJson(json);
 });
+
+ipcMain.handle(
+  "desklink-set-active-display-bounds",
+  async (_e, bounds: unknown) => {
+    if (
+      bounds &&
+      typeof bounds === "object" &&
+      typeof (bounds as { x?: unknown }).x === "number" &&
+      typeof (bounds as { y?: unknown }).y === "number" &&
+      typeof (bounds as { width?: unknown }).width === "number" &&
+      typeof (bounds as { height?: unknown }).height === "number"
+    ) {
+      const b = bounds as { x: number; y: number; width: number; height: number };
+      const mod = await loadControlModule();
+      mod.setActiveDisplayBounds(b);
+      return;
+    }
+    const mod = await loadControlModule();
+    mod.setActiveDisplayBounds(null);
+  },
+);
 
 ipcMain.handle("desklink-notify-session", () => {
   mainWindow?.minimize();

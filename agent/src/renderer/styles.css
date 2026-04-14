@@ -42,18 +42,20 @@ body {
   width: 48px;
   height: 48px;
   border-radius: 14px;
-  background: linear-gradient(145deg, #5b9cf5 0%, #3d7ae8 100%);
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: var(--shadow);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
-.brand-icon svg {
-  width: 28px;
-  height: 28px;
-  color: #fff;
+.brand-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .brand-text h1 {

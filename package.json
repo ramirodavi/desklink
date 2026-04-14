@@ -11,8 +11,7 @@
     "dev:client": "npm run dev -w client",
     "dev": "concurrently -n server,client \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client && npm run build -w server && npm run build -w agent",
-    "start": "npm run start -w server",
-    "scan-ports": "node scripts/scan-public-ports.mjs"
+    "start": "npm run start -w server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

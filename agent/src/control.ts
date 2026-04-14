@@ -1,9 +1,82 @@
 import { keyboard, mouse, screen } from "@nut-tree-fork/nut-js";
 import { Button, Key, Point } from "@nut-tree-fork/shared";
+import { spawn } from "node:child_process";
 import type { ControlMsg } from "./protocol.js";
 import { codeToKey } from "./keymap.js";
 
 let inited = false;
+let activeDisplayBounds: { x: number; y: number; width: number; height: number } | null =
+  null;
+const MAX_WHEEL_STEPS = 8;
+const WHEEL_DELTA = 120;
+let nativeWheelHelper: ReturnType<typeof spawn> | null = null;
+
+const nativeWheelHelperScript = `
+Add-Type -Namespace DeskLinkNative -Name User32 -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, System.UIntPtr dwExtraInfo);
+"@ -ErrorAction SilentlyContinue | Out-Null
+$MOUSEEVENTF_WHEEL = 0x0800
+$MOUSEEVENTF_HWHEEL = 0x1000
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  if ([string]::IsNullOrWhiteSpace($line)) { continue }
+  $parts = $line.Split(" ")
+  if ($parts.Length -lt 2) { continue }
+  $v = 0
+  $h = 0
+  [void][int]::TryParse($parts[0], [ref]$v)
+  [void][int]::TryParse($parts[1], [ref]$h)
+  if ($v -ne 0) { [DeskLinkNative.User32]::mouse_event($MOUSEEVENTF_WHEEL, 0, 0, $v, [System.UIntPtr]::Zero) }
+  if ($h -ne 0) { [DeskLinkNative.User32]::mouse_event($MOUSEEVENTF_HWHEEL, 0, 0, $h, [System.UIntPtr]::Zero) }
+}
+`;
+
+function ensureNativeWheelHelper(): ReturnType<typeof spawn> | null {
+  if (process.platform !== "win32") return null;
+  if (
+    nativeWheelHelper &&
+    !nativeWheelHelper.killed &&
+    nativeWheelHelper.stdin &&
+    nativeWheelHelper.stdin.writable
+  ) {
+    return nativeWheelHelper;
+  }
+  const p = spawn(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      nativeWheelHelperScript,
+    ],
+    { stdio: ["pipe", "ignore", "ignore"] },
+  );
+  p.on("exit", () => {
+    if (nativeWheelHelper === p) nativeWheelHelper = null;
+  });
+  nativeWheelHelper = p;
+  return p;
+}
+
+function tryNativeWheel(vx: number, vy: number): boolean {
+  const helper = ensureNativeWheelHelper();
+  if (!helper || helper.killed || !helper.stdin || !helper.stdin.writable) return false;
+  const vertical = -vy * WHEEL_DELTA;
+  const horizontal = vx * WHEEL_DELTA;
+  if (vertical === 0 && horizontal === 0) return true;
+  helper.stdin.write(`${vertical} ${horizontal}\n`);
+  return true;
+}
+
+process.once("exit", () => {
+  if (nativeWheelHelper && !nativeWheelHelper.killed) {
+    nativeWheelHelper.kill();
+    nativeWheelHelper = null;
+  }
+});
 
 function ensureInit() {
   if (inited) return;
@@ -11,6 +84,12 @@ function ensureInit() {
   mouse.config.autoDelayMs = 0;
   mouse.config.mouseSpeed = 20000;
   inited = true;
+}
+
+export function setActiveDisplayBounds(
+  bounds: { x: number; y: number; width: number; height: number } | null,
+) {
+  activeDisplayBounds = bounds;
 }
 
 function btnToButton(b: number): Button {
@@ -28,6 +107,22 @@ function modifierKeys(msg: Extract<ControlMsg, { t: "key" }>): Key[] {
   return m;
 }
 
+function clampWheelSteps(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  const n = Math.trunc(v);
+  return Math.sign(n) * Math.min(MAX_WHEEL_STEPS, Math.abs(n));
+}
+
+async function applyWheel(vx: number, vy: number): Promise<void> {
+  const sx = clampWheelSteps(vx);
+  const sy = clampWheelSteps(vy);
+  if (tryNativeWheel(sx, sy)) return;
+  if (sy > 0) await mouse.scrollDown(sy);
+  else if (sy < 0) await mouse.scrollUp(-sy);
+  if (sx > 0) await mouse.scrollRight(sx);
+  else if (sx < 0) await mouse.scrollLeft(-sx);
+}
+
 export async function applyControlJson(json: string): Promise<void> {
   ensureInit();
   let msg: ControlMsg;
@@ -37,13 +132,18 @@ export async function applyControlJson(json: string): Promise<void> {
     return;
   }
 
-  const w = await screen.width();
-  const h = await screen.height();
+  const fallbackW = await screen.width();
+  const fallbackH = await screen.height();
+  const target = activeDisplayBounds;
+  const w = target?.width ?? fallbackW;
+  const h = target?.height ?? fallbackH;
+  const ox = target?.x ?? 0;
+  const oy = target?.y ?? 0;
 
   switch (msg.t) {
     case "move": {
-      const x = Math.min(w, Math.max(0, Math.round(msg.x * w)));
-      const y = Math.min(h, Math.max(0, Math.round(msg.y * h)));
+      const x = ox + Math.min(w - 1, Math.max(0, Math.round(msg.x * w)));
+      const y = oy + Math.min(h - 1, Math.max(0, Math.round(msg.y * h)));
       await mouse.setPosition(new Point(x, y));
       break;
     }
@@ -59,22 +159,33 @@ export async function applyControlJson(json: string): Promise<void> {
       break;
     }
     case "wheel": {
-      const dx = msg.dx;
-      const dy = msg.dy;
-      const stepX = Math.min(50, Math.max(1, Math.ceil(Math.abs(dx) / 20)));
-      const stepY = Math.min(50, Math.max(1, Math.ceil(Math.abs(dy) / 20)));
-      if (dy > 0) await mouse.scrollDown(stepY);
-      else if (dy < 0) await mouse.scrollUp(stepY);
-      if (dx > 0) await mouse.scrollRight(stepX);
-      else if (dx < 0) await mouse.scrollLeft(stepX);
+      await applyWheel(msg.vx, msg.vy);
       break;
     }
     case "key": {
+      const textKey = typeof msg.key === "string" ? msg.key : "";
+      if (
+        msg.down &&
+        textKey.length === 1 &&
+        !msg.ctrl &&
+        !msg.alt &&
+        !msg.meta
+      ) {
+        // Usa o caractere já resolvido no cliente para respeitar layout/idioma de teclado.
+        await keyboard.type(textKey);
+        break;
+      }
+      if (!msg.down && textKey.length === 1 && !msg.ctrl && !msg.alt && !msg.meta) {
+        break;
+      }
       const k = codeToKey(msg.code);
       if (k === undefined) return;
       const mods = modifierKeys(msg);
       if (msg.down) await keyboard.pressKey(...mods, k);
       else await keyboard.releaseKey(...mods, k);
+      break;
+    }
+    case "monitor": {
       break;
     }
     default:

@@ -10,9 +10,13 @@ directories:
 files:
   - dist/**/*
   - package.json
+  # Ícones da janela em runtime (nativeImage); buildResources sozinho não entra no app.asar
+  - build/icon.ico
+  - build/icon.png
 
 win:
-  icon: build/icon.png
+  # Gerado por `npm run build-icon -w agent` a partir de build/icon.png (transparência no PNG)
+  icon: build/icon.ico
   target:
     - portable
   artifactName: "${productName}-${version}-portable.${ext}"

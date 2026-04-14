@@ -18,7 +18,16 @@ app.use(cors({ origin: CLIENT_ORIGIN === "*" ? true : CLIENT_ORIGIN }));
 app.use(express.json());
 
 const clientDist = path.resolve(__dirname, "../../client/dist");
+const brandIconPath = path.resolve(__dirname, "../../agent/build/icon.png");
 app.use(express.static(clientDist));
+
+app.get("/api/brand-icon", (_req, res) => {
+  res.sendFile(brandIconPath, (err) => {
+    if (err) {
+      res.status(404).end();
+    }
+  });
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
@@ -148,7 +157,6 @@ io.on("connection", (socket) => {
       }
       void socket.join(roomKey(sessionId));
       ack?.(null);
-      socket.to(roomKey(sessionId)).emit("peer-joined", { role });
     },
   );
 
@@ -183,13 +191,6 @@ io.on("connection", (socket) => {
     if (!state?.controller || state.controller.socketId !== socket.id) return;
     if (!state.host) return;
     io.to(state.host.socketId).emit("controller-video-ready", { sessionId });
-  });
-
-  socket.on("webrtc-controller-reset", (payload: { sessionId: string }) => {
-    const { sessionId } = payload;
-    const state = rooms.get(sessionId);
-    if (!state?.controller || state.controller.socketId !== socket.id) return;
-    state.controllerWebRtcReady = false;
   });
 
   socket.on(

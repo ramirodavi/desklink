@@ -4,10 +4,14 @@ export type ControlMsg =
   | { t: "btn"; b: number; down: boolean }
   /** Duplo clique (evita depender só do intervalo entre dois cliques pela rede) */
   | { t: "dblclick"; b: number }
-  | { t: "wheel"; dx: number; dy: number }
+  /** Wheel em "steps" inteiros (positivo = baixo/direita). */
+  | { t: "wheel"; vx: number; vy: number }
+  | { t: "monitor"; d: "next" }
+  | { t: "monitor"; d: "active"; idx: number; total: number; name: string }
   | {
       t: "key";
       code: string;
+      key: string;
       down: boolean;
       ctrl: boolean;
       alt: boolean;

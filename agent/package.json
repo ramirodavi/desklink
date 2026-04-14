@@ -12,8 +12,9 @@
     "build:preload": "esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
     "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=esm",
     "build": "npm run build:main && npm run build:preload && npm run build:renderer && node scripts/copy-html.mjs",
+    "build-icon": "node scripts/build-icon.mjs",
     "dev": "npm run build && electron .",
-    "pack": "npm run build && electron-builder --win portable --x64"
+    "pack": "npm run build && npm run build-icon && electron-builder --win portable --x64"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
@@ -24,6 +25,8 @@
     "electron": "31.7.7",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.24.2",
+    "sharp": "^0.34.5",
+    "to-ico": "^1.1.5",
     "typescript": "^5.7.2"
   }
 }

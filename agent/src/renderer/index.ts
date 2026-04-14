@@ -4,24 +4,39 @@ import type { ControlMsg } from "./protocol.js";
 declare global {
   interface Window {
     desklink: {
-      getDesktopSources: () => Promise<{ id: string; name: string }[]>;
+      getDesktopSources: () => Promise<DesktopSource[]>;
       applyControl: (json: string) => Promise<void>;
       notifySessionActive: () => Promise<void>;
       readClipboard: () => Promise<string>;
       writeClipboard: (text: string) => Promise<void>;
+      setActiveDisplayBounds: (
+        bounds: { x: number; y: number; width: number; height: number } | null,
+      ) => Promise<void>;
     };
   }
 }
 
+type DesktopSource = {
+  id: string;
+  name: string;
+  displayId: number | null;
+  bounds: { x: number; y: number; width: number; height: number } | null;
+};
+
 const CLIP_MAX_CHARS = 256 * 1024;
 const CLIP_POLL_MS = 500;
 const CLIP_SUPPRESS_MS = 450;
+const WHEEL_FLUSH_MS = 16;
+const WHEEL_MAX_STEPS_PER_FLUSH = 8;
 
 let hostClipboardSync = false;
 let hostClipPollId: ReturnType<typeof setInterval> | null = null;
 /** Último texto conhecido no clipboard do OS (evita push duplicado). */
 let hostClipKnown = "";
 let hostClipSuppressUntil = 0;
+let hostWheelPendingX = 0;
+let hostWheelPendingY = 0;
+let hostWheelFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearHostClipboardPoll() {
   if (hostClipPollId) {
@@ -78,6 +93,52 @@ function setHostClipboardSync(enabled: boolean) {
   startHostClipboardPoll();
 }
 
+function resetHostWheelState() {
+  hostWheelPendingX = 0;
+  hostWheelPendingY = 0;
+  if (hostWheelFlushTimer) {
+    clearTimeout(hostWheelFlushTimer);
+    hostWheelFlushTimer = null;
+  }
+}
+
+function scheduleHostWheelFlush() {
+  if (hostWheelFlushTimer) return;
+  hostWheelFlushTimer = setTimeout(() => {
+    hostWheelFlushTimer = null;
+    flushHostWheelToMain();
+  }, WHEEL_FLUSH_MS);
+}
+
+function enqueueHostWheel(vx: number, vy: number) {
+  const sx = Number.isFinite(vx) ? Math.trunc(vx) : 0;
+  const sy = Number.isFinite(vy) ? Math.trunc(vy) : 0;
+  if (sx === 0 && sy === 0) return;
+  hostWheelPendingX += sx;
+  hostWheelPendingY += sy;
+  scheduleHostWheelFlush();
+}
+
+function flushHostWheelToMain() {
+  if (!controlChannel || controlChannel.readyState !== "open") {
+    resetHostWheelState();
+    return;
+  }
+  const sx =
+    Math.sign(hostWheelPendingX) *
+    Math.min(WHEEL_MAX_STEPS_PER_FLUSH, Math.abs(hostWheelPendingX));
+  const sy =
+    Math.sign(hostWheelPendingY) *
+    Math.min(WHEEL_MAX_STEPS_PER_FLUSH, Math.abs(hostWheelPendingY));
+  if (sx === 0 && sy === 0) return;
+  hostWheelPendingX -= sx;
+  hostWheelPendingY -= sy;
+  void window.desklink.applyControl(JSON.stringify({ t: "wheel", vx: sx, vy: sy } satisfies ControlMsg));
+  if (hostWheelPendingX !== 0 || hostWheelPendingY !== 0) {
+    scheduleHostWheelFlush();
+  }
+}
+
 async function applyClipSetFromClient(text: string) {
   if (!hostClipboardSync) return;
   let s = typeof text === "string" ? text : "";
@@ -106,6 +167,14 @@ function routeControlChannelMessage(raw: string) {
     }
     return;
   }
+  if (msg.t === "monitor" && msg.d === "next") {
+    void switchToNextDesktopSource();
+    return;
+  }
+  if (msg.t === "wheel") {
+    enqueueHostWheel(msg.vx, msg.vy);
+    return;
+  }
   void window.desklink.applyControl(raw);
 }
 
@@ -115,11 +184,7 @@ root.innerHTML = `
   <div class="app-shell">
     <header class="brand">
       <div class="brand-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="2" y="3" width="20" height="14" rx="2"/>
-          <path d="M8 21h8M12 17v4"/>
-          <path d="M12 9.5l2.5 2 3-3" stroke-width="1.6"/>
-        </svg>
+        <img src="./icon.png" width="48" height="48" alt="" decoding="async" />
       </div>
       <div class="brand-text">
         <h1>DeskLink</h1>
@@ -175,10 +240,86 @@ let pc: RTCPeerConnection | null = null;
 let controlChannel: RTCDataChannel | null = null;
 let localStream: MediaStream | null = null;
 let pendingIce: RTCIceCandidateInit[] = [];
+let desktopSources: DesktopSource[] = [];
+let activeSourceIdx = -1;
 
 function setStatus(t: string, kind: "" | "ok" | "err" = "") {
   statusText.textContent = t;
   statusText.className = "status" + (kind ? ` ${kind}` : "");
+}
+
+function sendActiveMonitorStateToController() {
+  if (!controlChannel || controlChannel.readyState !== "open") return;
+  const src = desktopSources[activeSourceIdx];
+  controlChannel.send(
+    JSON.stringify({
+      t: "monitor",
+      d: "active",
+      idx: activeSourceIdx,
+      total: desktopSources.length,
+      name: src?.name ?? "",
+    } satisfies ControlMsg),
+  );
+}
+
+async function applyActiveSourceBounds() {
+  const src = desktopSources[activeSourceIdx];
+  await window.desklink.setActiveDisplayBounds(src?.bounds ?? null);
+}
+
+async function createDesktopStream(sourceId: string): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: "desktop",
+        chromeMediaSourceId: sourceId,
+        maxFrameRate: 30,
+      },
+    },
+  } as MediaStreamConstraints);
+}
+
+async function switchToDesktopSource(nextIdx: number): Promise<boolean> {
+  if (!pc || !localStream || nextIdx < 0 || nextIdx >= desktopSources.length) {
+    return false;
+  }
+  const src = desktopSources[nextIdx];
+  if (!src) return false;
+  const nextStream = await createDesktopStream(src.id);
+  const nextTrack = nextStream.getVideoTracks()[0];
+  if (!nextTrack) {
+    nextStream.getTracks().forEach((t) => t.stop());
+    return false;
+  }
+  const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+  if (!sender) {
+    nextStream.getTracks().forEach((t) => t.stop());
+    return false;
+  }
+  await sender.replaceTrack(nextTrack);
+  localStream.getTracks().forEach((t) => t.stop());
+  localStream = nextStream;
+  activeSourceIdx = nextIdx;
+  await applyActiveSourceBounds();
+  return true;
+}
+
+async function switchToNextDesktopSource() {
+  if (!pc || !localStream || desktopSources.length <= 1) return;
+  const next = (activeSourceIdx + 1) % desktopSources.length;
+  try {
+    const ok = await switchToDesktopSource(next);
+    if (!ok) {
+      setStatus("Falha ao alternar monitor remoto.", "err");
+      return;
+    }
+    const src = desktopSources[activeSourceIdx];
+    sendActiveMonitorStateToController();
+    setStatus(`Monitor remoto ativo: ${src?.name ?? `#${activeSourceIdx + 1}`}.`, "ok");
+  } catch (e) {
+    setStatus(`Falha ao alternar monitor: ${String(e)}`, "err");
+  }
 }
 
 btnCopy.addEventListener("click", async () => {
@@ -192,11 +333,14 @@ btnCopy.addEventListener("click", async () => {
 
 function cleanupPeer() {
   stopHostClipboardSync();
+  resetHostWheelState();
   controlChannel?.close();
   controlChannel = null;
   pendingIce = [];
   localStream?.getTracks().forEach((t) => t.stop());
   localStream = null;
+  activeSourceIdx = -1;
+  void window.desklink.setActiveDisplayBounds(null);
   pc?.close();
   pc = null;
 }
@@ -363,26 +507,19 @@ btnShare.addEventListener("click", async () => {
   try {
     const base = serverUrlInput.value.trim();
     const iceServers = await fetchIceServers(base);
-    const sources = await window.desklink.getDesktopSources();
-    const first = sources[0];
+    desktopSources = await window.desklink.getDesktopSources();
+    const first = desktopSources[0];
     if (!first) {
       setStatus("Nenhuma tela encontrada.", "err");
       return;
     }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: "desktop",
-          chromeMediaSourceId: first.id,
-          maxFrameRate: 30,
-        },
-      },
-    } as MediaStreamConstraints);
+    activeSourceIdx = 0;
+    const stream = await createDesktopStream(first.id);
 
     cleanupPeer();
+    activeSourceIdx = 0;
     localStream = stream;
+    await applyActiveSourceBounds();
 
     pc = new RTCPeerConnection({ iceServers });
     for (const track of stream.getVideoTracks()) {
@@ -406,6 +543,9 @@ btnShare.addEventListener("click", async () => {
     controlChannel = pc.createDataChannel("control", {
       ordered: true,
     });
+    controlChannel.onopen = () => {
+      sendActiveMonitorStateToController();
+    };
     controlChannel.onmessage = (ev) => {
       routeControlChannelMessage(String(ev.data));
     };
@@ -414,7 +554,14 @@ btnShare.addEventListener("click", async () => {
     btnShare.disabled = true;
     btnStop.disabled = false;
     serverUrlInput.disabled = true;
-    setStatus("Compartilhando. Aguardando controlador e permissão WebRTC.", "ok");
+    const monitorHint =
+      desktopSources.length > 1
+        ? " Use F8 no controlador para alternar monitor."
+        : "";
+    setStatus(
+      `Compartilhando ${first.name}. Aguardando controlador e permissão WebRTC.${monitorHint}`,
+      "ok",
+    );
   } catch (e) {
     setStatus(`Erro: ${String(e)}`, "err");
     cleanupPeer();

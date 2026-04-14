@@ -5,6 +5,8 @@ import {
   SHORTCUT_SEQUENCES,
 } from "./shortcuts.js";
 
+document.title = "DeskLink — Controlador Remoto";
+
 function $(sel: string) {
   const el = document.querySelector(sel);
   if (!el) throw new Error(`Missing ${sel}`);
@@ -17,11 +19,7 @@ const app = $("#app");
 app.innerHTML = `
   <div class="panel connect-panel">
     <div class="connect-header">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-        <rect x="2" y="4" width="14" height="12" rx="1.5"/>
-        <path d="M6 20h12M12 16v4"/>
-        <path d="M22 8v6M19 8l3 3 3-3"/>
-      </svg>
+      <img src="/api/brand-icon" width="40" height="40" alt="" decoding="async" />
       <div>
         <h1>DeskLink</h1>
         <p>Controlador — conecte com o código que o host enviou</p>
@@ -41,11 +39,29 @@ app.innerHTML = `
   </div>
   <div class="panel remote-panel hidden" id="remotePanel">
     <div class="remote-toolbar">
-      <span class="remote-toolbar-title">Área remota</span>
+      <div class="remote-toolbar-head">
+        <span class="remote-toolbar-title">Área remota</span>
+        <button type="button" class="monitor-indicator" id="monitorIndicator" title="Clique para alternar o monitor remoto ativo">
+          <span class="monitor-indicator-icon" aria-hidden="true">↹</span>
+          <span class="monitor-indicator-label">Monitor: aguardando…</span>
+        </button>
+      </div>
       <div class="remote-toolbar-actions">
-        <label class="clipboard-sync-label" title="Sincroniza texto entre este PC e o remoto. Pode pedir permissão de leitura da área de transferência ao navegador.">
+        <label class="remote-control-label" title="Quando desmarcado, a área remota fica apenas em visualização (sem enviar mouse/teclado ao host).">
+          <input type="checkbox" id="remoteControlEnabled" checked />
+          Habilitar controle remoto
+        </label>
+        <label class="wheel-sensitivity-label" title="Ajusta a sensibilidade da rolagem enviada ao host. Aplique sem reconectar.">
+          Sensibilidade da rolagem
+          <select id="wheelSensitivity">
+            <option value="low">Baixa</option>
+            <option value="medium" selected>Média</option>
+            <option value="high">Alta</option>
+          </select>
+        </label>
+        <label class="clipboard-sync-label" title="Sincroniza a área de transferência entre este PC e o remoto. Apenas texto. O navegador pode pedir permissão de leitura.">
           <input type="checkbox" id="clipboardSync" />
-          Sincronizar área de transferência (texto)
+          Sincronizar área de transferência
         </label>
         <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela">Focar na tela remota</button>
         <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia do navegador">Tela cheia</button>
@@ -108,15 +124,33 @@ const remotePanel = $("#remotePanel");
 const remoteVideo = $("#remoteVideo") as HTMLVideoElement;
 const overlay = $("#overlay") as HTMLDivElement;
 const connStatus = $("#connStatus");
+const monitorIndicator = $("#monitorIndicator") as HTMLButtonElement;
 const remoteStage = $("#remoteStage") as HTMLDivElement;
 const btnFocusRemote = $("#btnFocusRemote") as HTMLButtonElement;
 const btnFullscreen = $("#btnFullscreen") as HTMLButtonElement;
 const shortcutPanel = $("#shortcutPanel");
 const clipboardSyncCheckbox = $("#clipboardSync") as HTMLInputElement;
+const remoteControlCheckbox = $("#remoteControlEnabled") as HTMLInputElement;
+const wheelSensitivitySelect = $("#wheelSensitivity") as HTMLSelectElement;
 
 const CLIP_MAX_CHARS = 256 * 1024;
 const CLIP_POLL_MS = 500;
+type WheelSensitivity = "low" | "medium" | "high";
+type WheelProfile = {
+  lineHeight: number;
+  step: number;
+  flushMs: number;
+  maxStepsPerFlush: number;
+};
+const WHEEL_PROFILES: Record<WheelSensitivity, WheelProfile> = {
+  low: { lineHeight: 19, step: 150, flushMs: 20, maxStepsPerFlush: 4 },
+  medium: { lineHeight: 19, step: 120, flushMs: 16, maxStepsPerFlush: 8 },
+  high: { lineHeight: 19, step: 90, flushMs: 12, maxStepsPerFlush: 12 },
+};
+const DEFAULT_WHEEL_SENSITIVITY: WheelSensitivity = "medium";
 let clientClipPollId: ReturnType<typeof setInterval> | null = null;
+let captureKeys = false;
+let remoteControlEnabled = true;
 /** Quando true, o usuário pediu sync; alinhado ao checkbox. */
 let clientClipboardSync = false;
 /** Último texto enviado ao host (evita reenvio). */
@@ -129,6 +163,124 @@ let controlSend: RTCDataChannel | null = null;
 let currentSessionId = "";
 /** ICE pode chegar antes do SDP remoto — sem fila a mídia nunca conecta */
 let pendingIce: RTCIceCandidateInit[] = [];
+let wheelAccumX = 0;
+let wheelAccumY = 0;
+let wheelPendingX = 0;
+let wheelPendingY = 0;
+let wheelFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let wheelSensitivity: WheelSensitivity = DEFAULT_WHEEL_SENSITIVITY;
+let wheelProfile: WheelProfile = WHEEL_PROFILES[wheelSensitivity];
+const monitorIndicatorLabel = monitorIndicator.querySelector(
+  ".monitor-indicator-label",
+) as HTMLSpanElement;
+
+function updateMonitorIndicator(
+  idx: number | null,
+  total: number | null,
+  name = "",
+) {
+  if (idx === null || total === null || total <= 0) {
+    monitorIndicatorLabel.textContent = "Monitor: aguardando…";
+    return;
+  }
+  const n = idx + 1;
+  const suffix = name ? ` (${name})` : "";
+  monitorIndicatorLabel.textContent = `Monitor: ${n}/${total}${suffix}`;
+}
+
+function normalizeWheelDelta(dm: number, delta: number): number {
+  if (!Number.isFinite(delta)) return 0;
+  if (dm === 0) return delta;
+  return delta * wheelProfile.lineHeight;
+}
+
+function parseWheelSensitivity(raw: string): WheelSensitivity | null {
+  if (raw === "low" || raw === "medium" || raw === "high") return raw;
+  return null;
+}
+
+function applyWheelSensitivity(level: WheelSensitivity, syncUi = true) {
+  wheelSensitivity = level;
+  wheelProfile = WHEEL_PROFILES[level];
+  resetWheelState();
+  if (syncUi) {
+    wheelSensitivitySelect.value = level;
+  }
+}
+
+function resetWheelState() {
+  wheelAccumX = 0;
+  wheelAccumY = 0;
+  wheelPendingX = 0;
+  wheelPendingY = 0;
+  if (wheelFlushTimer) {
+    clearTimeout(wheelFlushTimer);
+    wheelFlushTimer = null;
+  }
+}
+
+function scheduleWheelFlush() {
+  if (wheelFlushTimer) return;
+  wheelFlushTimer = setTimeout(() => {
+    wheelFlushTimer = null;
+    flushWheelToHost();
+  }, wheelProfile.flushMs);
+}
+
+function enqueueWheelFromEvent(ev: WheelEvent) {
+  const dm = ev.deltaMode === 1 || ev.deltaMode === 2 ? 1 : 0;
+  wheelAccumX += normalizeWheelDelta(dm, ev.deltaX);
+  wheelAccumY += normalizeWheelDelta(dm, ev.deltaY);
+
+  let stepX = 0;
+  let stepY = 0;
+  while (Math.abs(wheelAccumX) >= wheelProfile.step) {
+    const dir = wheelAccumX > 0 ? 1 : -1;
+    wheelAccumX -= dir * wheelProfile.step;
+    stepX += dir;
+  }
+  while (Math.abs(wheelAccumY) >= wheelProfile.step) {
+    const dir = wheelAccumY > 0 ? 1 : -1;
+    wheelAccumY -= dir * wheelProfile.step;
+    stepY += dir;
+  }
+
+  if (stepX === 0 && stepY === 0) return;
+  wheelPendingX += stepX;
+  wheelPendingY += stepY;
+  scheduleWheelFlush();
+}
+
+function flushWheelToHost() {
+  if (!controlSend || controlSend.readyState !== "open") {
+    resetWheelState();
+    return;
+  }
+  const sendX =
+    Math.sign(wheelPendingX) *
+    Math.min(wheelProfile.maxStepsPerFlush, Math.abs(wheelPendingX));
+  const sendY =
+    Math.sign(wheelPendingY) *
+    Math.min(wheelProfile.maxStepsPerFlush, Math.abs(wheelPendingY));
+  if (sendX === 0 && sendY === 0) return;
+  wheelPendingX -= sendX;
+  wheelPendingY -= sendY;
+  const msg: ControlMsg = { t: "wheel", vx: sendX, vy: sendY };
+  controlSend.send(JSON.stringify(msg));
+  if (wheelPendingX !== 0 || wheelPendingY !== 0) {
+    scheduleWheelFlush();
+  }
+}
+
+function requestNextMonitorByUi() {
+  if (!controlSend || controlSend.readyState !== "open") {
+    setConnStatus("Canal de controle ainda não está pronto para alternar monitor.");
+    return;
+  }
+  const monMsg: ControlMsg = { t: "monitor", d: "next" };
+  controlSend.send(JSON.stringify(monMsg));
+  setConnStatus("Solicitação enviada: alternar monitor remoto.");
+}
 function setStatus(text: string, kind: "" | "ok" | "err" = "") {
   statusEl.textContent = text;
   statusEl.className = "status" + (kind ? ` ${kind}` : "");
@@ -197,6 +349,7 @@ function disableClientClipboardSync(notifyHost: boolean) {
 
 function cleanupPeer() {
   disableClientClipboardSync(true);
+  resetWheelState();
   controlSend?.close();
   controlSend = null;
   pendingIce = [];
@@ -225,11 +378,13 @@ function cleanupSocket() {
 function disconnectAll() {
   cleanupPeer();
   cleanupSocket();
+  captureKeys = false;
   remoteVideo.srcObject = null;
   remotePanel.classList.add("hidden");
   btnConnect.disabled = false;
   btnDisconnect.disabled = true;
   setConnStatus("");
+  updateMonitorIndicator(null, null);
   if (document.fullscreenElement) {
     void document.exitFullscreen().catch(() => {});
   }
@@ -242,6 +397,10 @@ btnDisconnect.addEventListener("click", () => {
 
 btnFocusRemote.addEventListener("click", () => {
   remoteStage.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+monitorIndicator.addEventListener("click", () => {
+  requestNextMonitorByUi();
 });
 
 btnFullscreen.addEventListener("click", async () => {
@@ -295,7 +454,30 @@ clipboardSyncCheckbox.addEventListener("change", () => {
   startClientClipboardPoll();
 });
 
+wheelSensitivitySelect.addEventListener("change", () => {
+  const parsed = parseWheelSensitivity(wheelSensitivitySelect.value);
+  if (!parsed) return;
+  applyWheelSensitivity(parsed, false);
+  setConnStatus(`Sensibilidade da rolagem: ${parsed === "low" ? "baixa" : parsed === "high" ? "alta" : "média"}.`);
+});
+
+remoteControlCheckbox.addEventListener("change", () => {
+  remoteControlEnabled = remoteControlCheckbox.checked;
+  if (!remoteControlEnabled) {
+    captureKeys = false;
+    overlay.classList.add("view-only");
+    setConnStatus("Modo de visualização: controle remoto desativado neste navegador.");
+    return;
+  }
+  overlay.classList.remove("view-only");
+  setConnStatus("Controle remoto ativado. Clique na área remota para capturar teclado e mouse.");
+});
+
 shortcutPanel.addEventListener("click", (ev) => {
+  if (!remoteControlEnabled) {
+    setConnStatus("Modo de visualização ativo: marque 'Habilitar controle remoto' para usar atalhos.");
+    return;
+  }
   const btn = (ev.target as HTMLElement).closest(
     "button[data-shortcut]",
   ) as HTMLButtonElement | null;
@@ -359,27 +541,32 @@ function sendMove(x: number, y: number) {
   controlSend.send(JSON.stringify(msg));
 }
 
-function handleClipboardMessageFromHost(raw: string) {
+function handleControlMessageFromHost(raw: string) {
   let msg: ControlMsg;
   try {
     msg = JSON.parse(raw) as ControlMsg;
   } catch {
     return;
   }
-  if (msg.t !== "clip" || msg.d !== "push") return;
-  if (!clientClipboardSync) return;
-  const text = typeof msg.text === "string" ? msg.text : "";
-  const clipped =
-    text.length > CLIP_MAX_CHARS ? text.slice(0, CLIP_MAX_CHARS) : text;
-  void navigator.clipboard.writeText(clipped).then(
-    () => {
-      clientLastSentToHost = clipped;
-      clientSuppressAfterHostPush = Date.now() + 450;
-    },
-    () => {
-      setConnStatus("Não foi possível escrever na área de transferência local.");
-    },
-  );
+  if (msg.t === "monitor" && msg.d === "active") {
+    updateMonitorIndicator(msg.idx, msg.total, msg.name);
+    return;
+  }
+  if (msg.t === "clip" && msg.d === "push") {
+    if (!clientClipboardSync) return;
+    const text = typeof msg.text === "string" ? msg.text : "";
+    const clipped =
+      text.length > CLIP_MAX_CHARS ? text.slice(0, CLIP_MAX_CHARS) : text;
+    void navigator.clipboard.writeText(clipped).then(
+      () => {
+        clientLastSentToHost = clipped;
+        clientSuppressAfterHostPush = Date.now() + 450;
+      },
+      () => {
+        setConnStatus("Não foi possível escrever na área de transferência local.");
+      },
+    );
+  }
 }
 
 async function clientClipboardPollTick() {
@@ -411,16 +598,19 @@ function startClientClipboardPoll() {
 
 function setupControlChannel(channel: RTCDataChannel) {
   controlSend = channel;
-  channel.binaryType = "arraybuffer";
-  let captureKeys = false;
+  applyWheelSensitivity(DEFAULT_WHEEL_SENSITIVITY);
   let lastNorm: { x: number; y: number } | null = null;
+  captureKeys = false;
+  remoteControlEnabled = remoteControlCheckbox.checked;
+  if (remoteControlEnabled) overlay.classList.remove("view-only");
+  else overlay.classList.add("view-only");
 
   channel.onmessage = (ev) => {
-    handleClipboardMessageFromHost(String(ev.data));
+    handleControlMessageFromHost(String(ev.data));
   };
 
   setConnStatus(
-    "Canal de controle pronto. Clique na área remota para capturar teclado e mouse.",
+    "Canal de controle pronto. Clique na área remota para capturar teclado e mouse (F8 alterna monitor remoto).",
   );
 
   overlay.addEventListener(
@@ -433,6 +623,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   );
 
   overlay.addEventListener("pointermove", (ev) => {
+    if (!remoteControlEnabled) return;
     if (!controlSend || controlSend.readyState !== "open") return;
     const n = clientToVideoNorm(ev.clientX, ev.clientY);
     if (!n) return;
@@ -441,6 +632,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   });
 
   overlay.addEventListener("pointerdown", (ev) => {
+    if (!remoteControlEnabled) return;
     ev.preventDefault();
     captureKeys = true;
     overlay.focus();
@@ -459,6 +651,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   });
 
   overlay.addEventListener("pointerup", (ev) => {
+    if (!remoteControlEnabled) return;
     ev.preventDefault();
     try {
       if (overlay.hasPointerCapture(ev.pointerId)) {
@@ -480,22 +673,42 @@ function setupControlChannel(channel: RTCDataChannel) {
   overlay.addEventListener(
     "wheel",
     (ev) => {
+      if (!remoteControlEnabled) return;
       ev.preventDefault();
       if (!controlSend || controlSend.readyState !== "open") return;
-      const msg: ControlMsg = { t: "wheel", dx: ev.deltaX, dy: ev.deltaY };
-      controlSend.send(JSON.stringify(msg));
+      const n = clientToVideoNorm(ev.clientX, ev.clientY);
+      if (n) {
+        lastNorm = n;
+        sendMove(n.x, n.y);
+      }
+      enqueueWheelFromEvent(ev);
     },
     { passive: false },
   );
 
   const keyHandler = (ev: KeyboardEvent) => {
+    if (!remoteControlEnabled) return;
     if (!captureKeys || remotePanel.classList.contains("hidden")) return;
     if (!controlSend || controlSend.readyState !== "open") return;
+    if (
+      ev.type === "keydown" &&
+      ev.code === "F8" &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      !ev.shiftKey &&
+      !ev.metaKey
+    ) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      requestNextMonitorByUi();
+      return;
+    }
     ev.preventDefault();
     ev.stopPropagation();
     const msg: ControlMsg = {
       t: "key",
       code: ev.code,
+      key: ev.key,
       down: ev.type === "keydown",
       ctrl: ev.ctrlKey,
       alt: ev.altKey,

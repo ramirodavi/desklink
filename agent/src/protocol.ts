@@ -2,10 +2,13 @@ export type ControlMsg =
   | { t: "move"; x: number; y: number }
   | { t: "btn"; b: number; down: boolean }
   | { t: "dblclick"; b: number }
-  | { t: "wheel"; dx: number; dy: number }
+  | { t: "wheel"; vx: number; vy: number }
+  | { t: "monitor"; d: "next" }
+  | { t: "monitor"; d: "active"; idx: number; total: number; name: string }
   | {
       t: "key";
       code: string;
+      key: string;
       down: boolean;
       ctrl: boolean;
       alt: boolean;

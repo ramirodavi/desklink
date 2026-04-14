@@ -118,10 +118,9 @@ body.view-fill .remote-panel > .status {
   margin-bottom: 1rem;
 }
 
-.connect-header svg {
+.connect-header img {
   width: 40px;
   height: 40px;
-  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -248,22 +247,110 @@ button.btn-ghost:hover:not(:disabled) {
   color: var(--muted);
 }
 
+.remote-toolbar-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.monitor-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(79, 143, 247, 0.14);
+  border: 1px solid rgba(79, 143, 247, 0.28);
+  color: #cfe0ff;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.monitor-indicator-icon {
+  font-size: 0.78rem;
+  opacity: 0.9;
+  line-height: 1;
+}
+
+.monitor-indicator-label {
+  display: inline-block;
+}
+
+.monitor-indicator:hover:not(:disabled) {
+  background: rgba(79, 143, 247, 0.24);
+  border-color: rgba(79, 143, 247, 0.42);
+}
+
 .remote-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  column-gap: 0.95rem;
+  row-gap: 1rem;
   align-items: center;
 }
 
 .clipboard-sync-label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 0.45rem;
   font-size: 0.8rem;
   font-weight: 500;
   color: #c5d0e6;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+}
+
+.remote-control-label {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #c5d0e6;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  margin-right: 0.75rem;
+}
+
+.wheel-sensitivity-label {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #c5d0e6;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.wheel-sensitivity-label select {
+  background: var(--bg);
+  border: 1px solid #2a3548;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.28rem 0.48rem;
+  font-size: 0.8rem;
+}
+
+.wheel-sensitivity-label select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 143, 247, 0.2);
+}
+
+.remote-control-label input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .clipboard-sync-label input {
@@ -375,8 +462,12 @@ button.btn-shortcut:hover:not(:disabled) {
 .overlay {
   position: absolute;
   inset: 0;
-  cursor: crosshair;
+  cursor: default;
   touch-action: none;
+}
+
+.overlay.view-only {
+  cursor: default;
 }
 
 .hidden {
