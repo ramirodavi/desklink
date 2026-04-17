@@ -1,4 +1,6 @@
 node_modules/
+agent/installer/payload/
+agent/installer/publish/
 dist/
 out/
 release/

@@ -64,7 +64,8 @@ Observação: o tráfego de mídia não passa pelo processo Node do DeskLink; pa
 |------|---------|
 | Node.js | 18+ ([nodejs.org](https://nodejs.org)) |
 | Sistema para host | Windows x64 |
-| Build nativo (quando necessário) | Visual Studio Build Tools com workload "Desktop development with C++" (pode ser exigido por dependências nativas) |
+| Dependências nativas (opcional) | [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) podem ser necessários caso o `electron-rebuild` precise compilar a partir do código-fonte (caso não haja binários pré-compilados). |
+| Wizard/Installer | [Inno Setup 6](https://jrsoftware.org/isdl.php) instalado (precisa do `ISCC.exe`). Se o `ISCC.exe` não estiver em `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`, defina `ISCC_PATH` antes do build. |
 
 ---
 
@@ -173,15 +174,24 @@ $env:ICE_SERVERS_JSON='[{"urls":["turn:turn.example.com:3478"],"username":"u","c
 | Arquivo | Função |
 |---------|--------|
 | `desklink-server.bat` | Instala dependências se necessário, compila client/server quando faltar `dist` e inicia servidor |
-| `desklink-build-agent.bat` | Build completo e empacotamento do host para `agent/release/` |
+| `desklink-build-agent.bat` | Build completo e geração do wizard de expedição em `agent/installer/publish/` |
 | `desklink-tunnel.bat` | Túnel Cloudflare para expor `localhost:3000` |
 
 ### 🧱 Build/release do Agent (pontos importantes)
 
 - `npm run pack -w agent` roda `build-icon` antes do `electron-builder`.
 - `build-icon` gera `agent/build/icon.ico` a partir de `agent/build/icon.png`.
-- O `desklink-build-agent.bat` pode restaurar `icon-wide-backup.png` e executar `crop-icon-banner.mjs` (se existir) antes de empacotar.
+- O `desklink-build-agent.bat` prepara o ícone atual do agent e executa o empacotamento do wizard.
 - O controlador usa `GET /api/brand-icon`, servido de `agent/build/icon.png`; em deploy/CI, garanta esse arquivo no host do servidor.
+
+### 🚚 Wizard de expedição sem admin
+
+- `npm run build:host-bundle -w agent`: gera o bundle desempacotado do host em `agent/release/win-unpacked/`.
+- `npm run prepare:wizard-payload -w agent`: copia o bundle desempacotado para `agent/installer/payload/` (pra não extrair em runtime).
+- `npm run build:deploy-wizard -w agent`: compila o wizard via Inno Setup em `agent/installer/publish/DeskLinkDeployWizard.exe`.
+- `npm run pack:wizard -w agent`: pipeline completo (host + payload + wizard).
+- O wizard roda sem admin, atualiza arquivos no diretório escolhido e cria atalho se ainda não existir.
+- Não há desinstalador dedicado: remover pasta/atalho manualmente quando necessário.
 
 ---
 
@@ -193,7 +203,7 @@ Validação recomendada antes de publicar release:
 
 1. `npm install`
 2. `npm run build`
-3. `npm run pack -w agent` (ou `desklink-build-agent.bat`)
+3. `npm run pack:wizard -w agent` (ou `desklink-build-agent.bat`)
 4. Validar manualmente:
    - conexão host/controlador;
    - troca de monitor remoto (`F8`);

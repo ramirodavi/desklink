@@ -17,11 +17,9 @@ files:
 win:
   # Gerado por `npm run build-icon -w agent` a partir de build/icon.png (transparência no PNG)
   icon: build/icon.ico
+  executableName: DeskLinkHost
   target:
-    - portable
-  artifactName: "${productName}-${version}-portable.${ext}"
-  # Evita baixar/extrair winCodeSign (symlinks exigem privilégios em alguns ambientes Windows)
+    - dir
+  artifactName: "DeskLinkHost.${ext}"
+  # Evita baixar/extrair winCodeSign (symlinks exigem privilégio no Windows).
   signAndEditExecutable: false
-
-nsis:
-  oneClick: false

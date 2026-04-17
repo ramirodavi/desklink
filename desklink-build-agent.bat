@@ -13,10 +13,10 @@ if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%
 if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "PATH=%ProgramFiles(x86)%\nodejs;%PATH%"
 if exist "%LocalAppData%\Programs\nodejs\node.exe" set "PATH=%LocalAppData%\Programs\nodejs;%PATH%"
 
-title DeskLink - Build agent portable
+title DeskLink - Build pacote de expedicao
 
 echo ========================================
-echo  DeskLink - compilar e gerar .exe host
+echo  DeskLink - compilar e gerar pacote de expedicao
 echo  Pasta: %CD%
 echo ========================================
 echo.
@@ -54,38 +54,23 @@ if errorlevel 1 (
 )
 echo.
 
-echo [4/5] preparar icone do agent
-if exist "agent\build\icon-wide-backup.png" (
-  echo     - restaurando icon-wide-backup.png ^> icon.png
-  copy /y "agent\build\icon-wide-backup.png" "agent\build\icon.png" >nul
-  if errorlevel 1 (
-    echo [ERRO] Falha ao restaurar icon-wide-backup.png.
-    goto :FIM_ERRO
-  )
-  if exist "agent\scripts\crop-icon-banner.mjs" (
-    echo     - executando recorte automatico do icone
-    call node "agent\scripts\crop-icon-banner.mjs"
-    if errorlevel 1 (
-      echo [ERRO] Recorte de icone falhou.
-      goto :FIM_ERRO
-    )
-  ) else (
-    echo     - script de recorte nao encontrado, mantendo icon.png restaurado.
-  )
-) else (
-  echo     - backup largo nao encontrado, mantendo icon.png atual.
-)
-echo.
-
-echo [5/5] npm run pack -w agent ^(pode levar varios minutos^)...
-call npm run pack -w agent
+echo [4/5] npm run build-icon -w agent
+call npm run build-icon -w agent
 if errorlevel 1 (
-  echo [ERRO] Pack do agent falhou.
+  echo [ERRO] Build do icone do agent falhou.
   goto :FIM_ERRO
 )
 echo.
 
-set "REL=%~dp0agent\release"
+echo [5/5] npm run pack:wizard -w agent ^(pode levar varios minutos^)...
+call npm run pack:wizard -w agent
+if errorlevel 1 (
+  echo [ERRO] Pack do wizard falhou.
+  goto :FIM_ERRO
+)
+echo.
+
+set "REL=%~dp0agent\installer\publish"
 echo ========================================
 echo  CONCLUIDO COM SUCESSO
 echo  Pasta do .exe: !REL!

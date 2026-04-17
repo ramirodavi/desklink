@@ -366,7 +366,7 @@ function disconnectSocket() {
 async function fetchIceServers(base: string): Promise<RTCIceServer[]> {
   const url = `${base.replace(/\/$/, "")}/api/ice-servers`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error("ICE servers");
+  if (!res.ok) throw new Error("Falha ao obter servidores ICE");
   return (await res.json()) as RTCIceServer[];
 }
 

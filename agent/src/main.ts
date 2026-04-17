@@ -42,10 +42,14 @@ const windowIcon = loadWindowIcon();
 /** Limite alinhado ao plano (texto clipboard). */
 const CLIPBOARD_MAX_CHARS = 256 * 1024;
 const SPLASH_FALLBACK_MS = 10000;
+const SPLASH_MIN_MS = 5000;
+
+let splashShownAtMs = 0;
 
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
 let splashFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let mainWindowShown = false;
 type ControlModule = typeof import("./control.js");
 let controlModulePromise: Promise<ControlModule> | null = null;
 
@@ -74,6 +78,7 @@ function closeSplashWindow() {
 
 function createSplashWindow() {
   closeSplashWindow();
+  splashShownAtMs = Date.now();
   const splashIconDataUrl = windowIcon?.toDataURL() ?? "";
   splashWindow = new BrowserWindow({
     width: 360,
@@ -221,7 +226,10 @@ function createSplashWindow() {
   );
   splashFallbackTimer = setTimeout(() => {
     closeSplashWindow();
-    mainWindow?.show();
+    if (!mainWindowShown) {
+      mainWindowShown = true;
+      mainWindow?.show();
+    }
   }, SPLASH_FALLBACK_MS);
 }
 
@@ -233,6 +241,8 @@ function createWindow() {
     minWidth: 380,
     minHeight: 560,
     show: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#0d1528",
     ...(windowIcon ? { icon: windowIcon } : {}),
     webPreferences: {
       // CommonJS (.cjs): preload ESM falha com sandbox e window.desklink fica undefined
@@ -248,19 +258,34 @@ function createWindow() {
     mainWindow.once("ready-to-show", applyIcon);
     mainWindow.webContents.once("did-finish-load", applyIcon);
   }
+  mainWindow.removeMenu();
 
   mainWindow.once("ready-to-show", () => {
-    closeSplashWindow();
-    mainWindow?.show();
-    // A UI aparece primeiro; o módulo de input pesado carrega depois.
+    const elapsed = Date.now() - splashShownAtMs;
+    const remaining = Math.max(0, SPLASH_MIN_MS - elapsed);
     setTimeout(() => {
-      void loadControlModule().catch(() => {});
-    }, 0);
+      closeSplashWindow();
+      if (!mainWindowShown) {
+        mainWindowShown = true;
+        mainWindow?.show();
+      }
+      // A UI aparece primeiro; o módulo de input pesado carrega depois.
+      setTimeout(() => {
+        void loadControlModule().catch(() => {});
+      }, 0);
+    }, remaining);
   });
 
   mainWindow.webContents.once("did-fail-load", () => {
-    closeSplashWindow();
-    mainWindow?.show();
+    const elapsed = Date.now() - splashShownAtMs;
+    const remaining = Math.max(0, SPLASH_MIN_MS - elapsed);
+    setTimeout(() => {
+      closeSplashWindow();
+      if (!mainWindowShown) {
+        mainWindowShown = true;
+        mainWindow?.show();
+      }
+    }, remaining);
   });
 
   mainWindow.on("closed", () => {
@@ -272,6 +297,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  app.setName("DeskLink Host");
   app.setAppUserModelId("com.desklink.host");
   createWindow();
   app.on("activate", () => {
