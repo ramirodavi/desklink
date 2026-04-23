@@ -107,6 +107,10 @@ function modifierKeys(msg: Extract<ControlMsg, { t: "key" }>): Key[] {
   return m;
 }
 
+function isLetterCode(code: string): boolean {
+  return /^Key[A-Z]$/.test(code);
+}
+
 function clampWheelSteps(v: number): number {
   if (!Number.isFinite(v)) return 0;
   const n = Math.trunc(v);
@@ -167,6 +171,7 @@ export async function applyControlJson(json: string): Promise<void> {
       if (
         msg.down &&
         textKey.length === 1 &&
+        !isLetterCode(msg.code) &&
         !msg.ctrl &&
         !msg.alt &&
         !msg.meta
@@ -175,7 +180,14 @@ export async function applyControlJson(json: string): Promise<void> {
         await keyboard.type(textKey);
         break;
       }
-      if (!msg.down && textKey.length === 1 && !msg.ctrl && !msg.alt && !msg.meta) {
+      if (
+        !msg.down &&
+        textKey.length === 1 &&
+        !isLetterCode(msg.code) &&
+        !msg.ctrl &&
+        !msg.alt &&
+        !msg.meta
+      ) {
         break;
       }
       const k = codeToKey(msg.code);

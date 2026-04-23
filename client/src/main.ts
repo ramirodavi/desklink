@@ -71,6 +71,7 @@ app.innerHTML = `
       <div class="shortcut-panel-head">
         <span class="shortcut-panel-title">Atalhos no PC remoto</span>
         <span class="shortcut-panel-hint">Envia o comando direto ao host (útil quando Win+… não chega pelo teclado local).</span>
+        <span class="shortcut-panel-hint">Teclas rápidas: <kbd>F6</kbd> (sincronizar área de transferência), <kbd>F7</kbd> (habilitar controle remoto), <kbd>F8</kbd> (alternar monitor), <kbd>F9</kbd> (focar tela remota), <kbd>F10</kbd> (tela cheia).</span>
       </div>
       <div class="shortcut-groups">
         <div class="shortcut-group">
@@ -170,6 +171,11 @@ let wheelPendingY = 0;
 let wheelFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let wheelSensitivity: WheelSensitivity = DEFAULT_WHEEL_SENSITIVITY;
 let wheelProfile: WheelProfile = WHEEL_PROFILES[wheelSensitivity];
+const HOTKEY_TOGGLE_CLIPBOARD_SYNC = "F6";
+const HOTKEY_TOGGLE_REMOTE_CONTROL = "F7";
+const HOTKEY_NEXT_MONITOR = "F8";
+const HOTKEY_FOCUS_REMOTE = "F9";
+const HOTKEY_TOGGLE_FULLSCREEN = "F10";
 const monitorIndicatorLabel = monitorIndicator.querySelector(
   ".monitor-indicator-label",
 ) as HTMLSpanElement;
@@ -281,6 +287,72 @@ function requestNextMonitorByUi() {
   controlSend.send(JSON.stringify(monMsg));
   setConnStatus("Solicitação enviada: alternar monitor remoto.");
 }
+
+function toggleCheckboxByHotkey(
+  checkbox: HTMLInputElement,
+  onText: string,
+  offText: string,
+) {
+  checkbox.checked = !checkbox.checked;
+  checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+  setConnStatus(checkbox.checked ? onText : offText);
+}
+
+function hasNoModifiers(ev: KeyboardEvent): boolean {
+  return !ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey;
+}
+
+function handleGlobalFunctionHotkeys(ev: KeyboardEvent): boolean {
+  if (ev.type !== "keydown") return false;
+  if (remotePanel.classList.contains("hidden")) return false;
+  if (!hasNoModifiers(ev)) return false;
+
+  if (ev.code === HOTKEY_TOGGLE_CLIPBOARD_SYNC) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleCheckboxByHotkey(
+      clipboardSyncCheckbox,
+      "Sincronização da área de transferência ativada.",
+      "Sincronização da área de transferência desativada.",
+    );
+    return true;
+  }
+
+  if (ev.code === HOTKEY_TOGGLE_REMOTE_CONTROL) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleCheckboxByHotkey(
+      remoteControlCheckbox,
+      "Controle remoto ativado.",
+      "Controle remoto desativado (modo visualização).",
+    );
+    return true;
+  }
+
+  if (ev.code === HOTKEY_NEXT_MONITOR) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    requestNextMonitorByUi();
+    return true;
+  }
+
+  if (ev.code === HOTKEY_FOCUS_REMOTE) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    btnFocusRemote.click();
+    setConnStatus("Tela remota em foco.");
+    return true;
+  }
+
+  if (ev.code === HOTKEY_TOGGLE_FULLSCREEN) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    btnFullscreen.click();
+    return true;
+  }
+  return false;
+}
+
 function setStatus(text: string, kind: "" | "ok" | "err" = "") {
   statusEl.textContent = text;
   statusEl.className = "status" + (kind ? ` ${kind}` : "");
@@ -610,7 +682,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   };
 
   setConnStatus(
-    "Canal de controle pronto. Clique na área remota para capturar teclado e mouse (F8 alterna monitor remoto).",
+    "Canal de controle pronto. Clique na área remota para capturar teclado e mouse.",
   );
 
   overlay.addEventListener(
@@ -687,22 +759,10 @@ function setupControlChannel(channel: RTCDataChannel) {
   );
 
   const keyHandler = (ev: KeyboardEvent) => {
+    if (handleGlobalFunctionHotkeys(ev)) return;
     if (!remoteControlEnabled) return;
     if (!captureKeys || remotePanel.classList.contains("hidden")) return;
     if (!controlSend || controlSend.readyState !== "open") return;
-    if (
-      ev.type === "keydown" &&
-      ev.code === "F8" &&
-      !ev.ctrlKey &&
-      !ev.altKey &&
-      !ev.shiftKey &&
-      !ev.metaKey
-    ) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      requestNextMonitorByUi();
-      return;
-    }
     ev.preventDefault();
     ev.stopPropagation();
     const msg: ControlMsg = {
