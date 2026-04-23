@@ -1,4 +1,5 @@
 import { io, type Socket } from "socket.io-client";
+import { CHAT_EMOJI_GROUPS } from "./chat-emoji-data.js";
 import type { ControlMsg } from "./protocol.js";
 import {
   runShortcutSequence,
@@ -112,6 +113,22 @@ app.innerHTML = `
         <div class="overlay" id="overlay" tabindex="0"></div>
       </div>
     </div>
+    <section class="chat-panel" id="chatPanel" aria-label="Conversa com o host">
+      <div class="chat-panel-head">
+        <span class="chat-panel-title">Conversa com o host</span>
+      </div>
+      <div class="chat-log" id="chatLog" role="log" aria-live="polite"></div>
+      <div class="chat-toolbar">
+        <div class="chat-input-wrap">
+          <textarea id="chatInput" maxlength="4000" rows="1" placeholder="Escreva uma mensagem…" autocomplete="off"></textarea>
+        </div>
+        <div class="chat-emoji-wrap">
+          <button type="button" class="btn-ghost chat-icon-btn" id="btnChatEmoji" aria-label="Mostrar emojis" aria-expanded="false" aria-haspopup="dialog" title="Mostrar emojis">🙂</button>
+          <div id="chatEmojiPopover" class="emoji-popover hidden" role="dialog" aria-label="Seletor de emojis" aria-hidden="true"></div>
+        </div>
+        <button type="button" class="chat-icon-btn chat-send-btn" id="btnChatSend" aria-label="Enviar mensagem" title="Enviar mensagem">➤</button>
+      </div>
+    </section>
     <p class="status" id="connStatus"></p>
   </div>
 `;
@@ -133,7 +150,14 @@ const shortcutPanel = $("#shortcutPanel");
 const clipboardSyncCheckbox = $("#clipboardSync") as HTMLInputElement;
 const remoteControlCheckbox = $("#remoteControlEnabled") as HTMLInputElement;
 const wheelSensitivitySelect = $("#wheelSensitivity") as HTMLSelectElement;
+const chatPanel = $("#chatPanel");
+const chatLog = $("#chatLog");
+const chatInput = $("#chatInput") as HTMLTextAreaElement;
+const btnChatSend = $("#btnChatSend") as HTMLButtonElement;
+const btnChatEmoji = $("#btnChatEmoji") as HTMLButtonElement;
+const chatEmojiPopover = $("#chatEmojiPopover") as HTMLDivElement;
 
+const CHAT_MAX_CHARS = 4000;
 const CLIP_MAX_CHARS = 256 * 1024;
 const CLIP_POLL_MS = 500;
 type WheelSensitivity = "low" | "medium" | "high";
@@ -192,6 +216,175 @@ function updateMonitorIndicator(
   const n = idx + 1;
   const suffix = name ? ` (${name})` : "";
   monitorIndicatorLabel.textContent = `Monitor: ${n}/${total}${suffix}`;
+}
+
+function formatChatTime(at: number) {
+  return new Date(at).toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function appendClientChatLine(side: "self" | "remote", text: string, at = Date.now()) {
+  const row = document.createElement("div");
+  row.className =
+    "chat-line" + (side === "self" ? " chat-line--self" : " chat-line--remote");
+  const meta = document.createElement("div");
+  meta.className = "chat-line-meta";
+  meta.textContent =
+    side === "self"
+      ? `Você · ${formatChatTime(at)}`
+      : `Host remoto · ${formatChatTime(at)}`;
+  const body = document.createElement("div");
+  body.className = "chat-line-body";
+  body.textContent = text;
+  row.append(meta, body);
+  chatLog.append(row);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function clearClientChatLog() {
+  chatLog.replaceChildren();
+}
+
+function notifyClientChatIncoming(text: string) {
+  if (document.visibilityState === "visible" && document.hasFocus()) return;
+  if (typeof Notification === "undefined") return;
+  const preview = text.length > 120 ? `${text.slice(0, 117)}…` : text;
+  const title = "DeskLink — Nova mensagem no chat";
+  const run = () => {
+    try {
+      new Notification(title, { body: preview });
+    } catch {
+      /* ignore */
+    }
+  };
+  if (Notification.permission === "granted") run();
+  else if (Notification.permission === "default") {
+    void Notification.requestPermission().then((p) => {
+      if (p === "granted") run();
+    });
+  }
+}
+
+function insertAtChatInputCursor(chunk: string) {
+  const start = chatInput.selectionStart ?? chatInput.value.length;
+  const end = chatInput.selectionEnd ?? chatInput.value.length;
+  const next = chatInput.value.slice(0, start) + chunk + chatInput.value.slice(end);
+  if (next.length > CHAT_MAX_CHARS) {
+    setConnStatus(
+      `O chat aceita no máximo ${CHAT_MAX_CHARS} caracteres por mensagem.`,
+    );
+    return;
+  }
+  chatInput.value = next;
+  const pos = start + chunk.length;
+  chatInput.setSelectionRange(pos, pos);
+  chatInput.focus();
+}
+
+let clientChatEmojiPopoverBuilt = false;
+let clientEmojiOutsideClose: ((e: PointerEvent) => void) | null = null;
+
+function buildClientEmojiPopoverIfNeeded() {
+  if (clientChatEmojiPopoverBuilt) return;
+  clientChatEmojiPopoverBuilt = true;
+  for (const g of CHAT_EMOJI_GROUPS) {
+    const sec = document.createElement("div");
+    sec.className = "emoji-popover-group";
+    const gt = document.createElement("div");
+    gt.className = "emoji-popover-group-title";
+    gt.textContent = g.title;
+    sec.append(gt);
+    const grid = document.createElement("div");
+    grid.className = "emoji-popover-grid";
+    for (const ch of g.emojis) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "emoji-popover-cell";
+      b.textContent = ch;
+      b.title = ch;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        insertAtChatInputCursor(ch);
+        closeClientChatEmojiPopover();
+      });
+      grid.append(b);
+    }
+    sec.append(grid);
+    chatEmojiPopover.append(sec);
+  }
+}
+
+function closeClientChatEmojiPopover() {
+  chatEmojiPopover.classList.add("hidden");
+  chatEmojiPopover.setAttribute("aria-hidden", "true");
+  btnChatEmoji.setAttribute("aria-expanded", "false");
+  if (clientEmojiOutsideClose) {
+    document.removeEventListener("pointerdown", clientEmojiOutsideClose, true);
+    clientEmojiOutsideClose = null;
+  }
+}
+
+function openClientChatEmojiPopover() {
+  if (clientEmojiOutsideClose) {
+    document.removeEventListener("pointerdown", clientEmojiOutsideClose, true);
+    clientEmojiOutsideClose = null;
+  }
+  buildClientEmojiPopoverIfNeeded();
+  chatEmojiPopover.classList.remove("hidden");
+  chatEmojiPopover.setAttribute("aria-hidden", "false");
+  btnChatEmoji.setAttribute("aria-expanded", "true");
+  clientEmojiOutsideClose = (e: PointerEvent) => {
+    if (
+      chatEmojiPopover.contains(e.target as Node) ||
+      btnChatEmoji.contains(e.target as Node)
+    ) {
+      return;
+    }
+    closeClientChatEmojiPopover();
+  };
+  setTimeout(() => {
+    if (clientEmojiOutsideClose) {
+      document.addEventListener("pointerdown", clientEmojiOutsideClose, true);
+    }
+  }, 0);
+}
+
+function toggleClientChatEmojiPopover() {
+  if (chatEmojiPopover.classList.contains("hidden")) openClientChatEmojiPopover();
+  else closeClientChatEmojiPopover();
+}
+
+function sendClientChatMessage() {
+  if (!controlSend || controlSend.readyState !== "open") {
+    setConnStatus("Canal de chat indisponível. Aguarde a conexão.");
+    return;
+  }
+  const raw = chatInput.value;
+  if (!raw.trim()) return;
+  let text = raw;
+  if (text.length > CHAT_MAX_CHARS) {
+    text = text.slice(0, CHAT_MAX_CHARS);
+    setConnStatus(`Mensagem limitada a ${CHAT_MAX_CHARS} caracteres.`);
+  }
+  const at = Date.now();
+  const msg: ControlMsg = {
+    t: "chat",
+    id: crypto.randomUUID(),
+    at,
+    from: "controller",
+    text,
+  };
+  try {
+    controlSend.send(JSON.stringify(msg));
+  } catch {
+    setConnStatus("Não foi possível enviar a mensagem.");
+    return;
+  }
+  appendClientChatLine("self", text, at);
+  chatInput.value = "";
+  closeClientChatEmojiPopover();
 }
 
 function normalizeWheelDelta(dm: number, delta: number): number {
@@ -453,6 +646,8 @@ function disconnectAll() {
   captureKeys = false;
   remoteVideo.srcObject = null;
   remotePanel.classList.add("hidden");
+  closeClientChatEmojiPopover();
+  clearClientChatLog();
   btnConnect.disabled = false;
   btnDisconnect.disabled = true;
   setConnStatus("");
@@ -545,6 +740,53 @@ remoteControlCheckbox.addEventListener("change", () => {
   setConnStatus("Controle remoto ativado. Clique na área remota para capturar teclado e mouse.");
 });
 
+btnChatEmoji.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleClientChatEmojiPopover();
+});
+
+btnChatSend.addEventListener("click", () => {
+  sendClientChatMessage();
+});
+
+chatInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault();
+    sendClientChatMessage();
+  }
+});
+
+document.addEventListener(
+  "keydown",
+  (ev) => {
+    if (
+      ev.key === "Escape" &&
+      !chatEmojiPopover.classList.contains("hidden")
+    ) {
+      closeClientChatEmojiPopover();
+    }
+  },
+  true,
+);
+
+window.addEventListener(
+  "keydown",
+  (ev) => {
+    if (remotePanel.classList.contains("hidden")) return;
+    if (
+      ev.metaKey &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      (ev.key === "ç" || ev.key === "Ç")
+    ) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openClientChatEmojiPopover();
+    }
+  },
+  true,
+);
+
 shortcutPanel.addEventListener("click", (ev) => {
   if (!remoteControlEnabled) {
     setConnStatus("Modo de visualização ativo: marque 'Habilitar controle remoto' para usar atalhos.");
@@ -622,6 +864,13 @@ function handleControlMessageFromHost(raw: string) {
   }
   if (msg.t === "monitor" && msg.d === "active") {
     updateMonitorIndicator(msg.idx, msg.total, msg.name);
+    return;
+  }
+  if (msg.t === "chat") {
+    const text = typeof msg.text === "string" ? msg.text : "";
+    const at = typeof msg.at === "number" ? msg.at : Date.now();
+    appendClientChatLine("remote", text, at);
+    notifyClientChatIncoming(text);
     return;
   }
   if (msg.t === "clip" && msg.d === "push") {

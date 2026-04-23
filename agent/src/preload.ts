@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("desklink", {
   setActiveDisplayBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null,
   ) => ipcRenderer.invoke("desklink-set-active-display-bounds", bounds) as Promise<void>,
+  notifyChatMessage: (preview: string) =>
+    ipcRenderer.invoke("desklink-notify-chat", preview) as Promise<void>,
 });
 
 export type DesklinkPreload = {
@@ -30,6 +32,7 @@ export type DesklinkPreload = {
   setActiveDisplayBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null,
   ) => Promise<void>;
+  notifyChatMessage: (preview: string) => Promise<void>;
 };
 
 declare global {

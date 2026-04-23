@@ -21,4 +21,12 @@ export type ControlMsg =
   /** Sincronização de clipboard (texto); só o controlador envia `sync`. */
   | { t: "clip"; d: "sync"; enabled: boolean }
   | { t: "clip"; d: "set"; text: string }
-  | { t: "clip"; d: "push"; text: string };
+  | { t: "clip"; d: "push"; text: string }
+  /** Texto UTF-8 (inclui emojis); o remetente define `from` coerente com o lado local. */
+  | {
+      t: "chat";
+      id: string;
+      at: number;
+      from: "host" | "controller";
+      text: string;
+    };

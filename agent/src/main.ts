@@ -236,10 +236,10 @@ function createSplashWindow() {
 function createWindow() {
   createSplashWindow();
   mainWindow = new BrowserWindow({
-    width: 480,
-    height: 720,
-    minWidth: 380,
-    minHeight: 560,
+    width: 520,
+    height: 860,
+    minWidth: 400,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#0d1528",
@@ -291,6 +291,12 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
     closeSplashWindow();
+  });
+
+  mainWindow.on("focus", () => {
+    if (process.platform === "win32") {
+      mainWindow?.flashFrame(false);
+    }
   });
 
   void mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
@@ -372,6 +378,28 @@ ipcMain.handle("desklink-notify-session", () => {
         "Conexão estabelecida. O controlador já está vendo sua tela; a janela foi minimizada.",
     });
     n.show();
+  }
+});
+
+ipcMain.handle("desklink-notify-chat", (_e, preview: unknown) => {
+  const body =
+    typeof preview === "string"
+      ? preview
+      : preview == null
+        ? ""
+        : String(preview);
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isFocused()) return;
+  const clipped = body.length > 140 ? `${body.slice(0, 137)}…` : body;
+  if (Notification.isSupported()) {
+    const n = new Notification({
+      title: "DeskLink — Nova mensagem no chat",
+      body: clipped || "(sem texto)",
+    });
+    n.show();
+  }
+  if (process.platform === "win32") {
+    mainWindow.flashFrame(true);
   }
 });
 

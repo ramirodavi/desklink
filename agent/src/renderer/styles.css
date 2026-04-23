@@ -18,7 +18,8 @@
 }
 
 html {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 body {
@@ -34,13 +35,22 @@ body {
 .app-shell {
   max-width: 440px;
   margin: 0 auto;
+  height: calc(100vh - 2.5rem);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.app-shell.app-shell--sharing {
+  max-width: 600px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 0.85rem;
-  margin-bottom: 1.35rem;
+  margin-bottom: 1rem;
+  flex-shrink: 0;
 }
 
 .brand-icon {
@@ -83,6 +93,7 @@ body {
   margin-bottom: 0.85rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: var(--shadow);
+  flex-shrink: 0;
 }
 
 .card-title {
@@ -214,6 +225,200 @@ button:disabled {
   text-align: center;
   font-size: 0.75rem;
   color: var(--muted);
-  margin-top: 1.25rem;
+  margin-top: 0.75rem;
   opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.chat-section {
+  margin-bottom: 0.85rem;
+  overflow: hidden;
+}
+
+.chat-section.hidden {
+  display: none !important;
+}
+
+.chat-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.55rem;
+}
+
+.chat-panel-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.chat-log {
+  height: 220px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 0.5rem 0.55rem;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid #2a3548;
+  margin-bottom: 0.65rem;
+  font-size: 0.88rem;
+}
+
+.chat-line {
+  margin-bottom: 0.55rem;
+}
+
+.chat-line:last-child {
+  margin-bottom: 0;
+}
+
+.chat-line-meta {
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.chat-line--self .chat-line-meta {
+  text-align: right;
+}
+
+.chat-line-body {
+  color: var(--text);
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+  font-family: "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", system-ui,
+    sans-serif;
+}
+
+.chat-line--self .chat-line-body {
+  text-align: right;
+}
+
+.chat-toolbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chat-input-wrap {
+  flex: 1;
+  min-width: 140px;
+}
+
+.chat-toolbar .chat-input-wrap textarea {
+  width: 100%;
+  min-height: 40px;
+  height: 40px;
+  max-height: 220px;
+  resize: vertical;
+  overflow-y: auto;
+  line-height: 1.35;
+  background: var(--bg);
+  border: 1px solid #2a3548;
+  color: var(--text);
+  border-radius: 8px;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+  padding-left: 0.7rem;
+  padding-right: 0.7rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.chat-emoji-wrap {
+  position: relative;
+}
+
+.chat-icon-btn {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.02rem;
+  line-height: 1;
+}
+
+.chat-send-btn {
+  font-size: 0.98rem;
+}
+
+.app-shell.app-shell--sharing .chat-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.app-shell.app-shell--sharing .chat-log {
+  flex: 1;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.app-shell.app-shell--sharing .chat-toolbar {
+  flex-shrink: 0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.emoji-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 50;
+  width: min(300px, 94vw);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 0.5rem 0.55rem;
+  background: var(--surface-2);
+  border: 1px solid #2f3d55;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.emoji-popover.hidden {
+  display: none !important;
+}
+
+.emoji-popover-group-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0.35rem 0 0.25rem;
+}
+
+.emoji-popover-group:first-child .emoji-popover-group-title {
+  margin-top: 0;
+}
+
+.emoji-popover-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+button.emoji-popover-cell {
+  padding: 0.25rem 0.32rem;
+  font-size: 1.15rem;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  min-width: auto;
+}
+
+button.emoji-popover-cell:hover:not(:disabled) {
+  background: rgba(79, 143, 247, 0.15);
+  border-color: rgba(79, 143, 247, 0.35);
 }

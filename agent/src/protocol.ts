@@ -17,4 +17,11 @@ export type ControlMsg =
     }
   | { t: "clip"; d: "sync"; enabled: boolean }
   | { t: "clip"; d: "set"; text: string }
-  | { t: "clip"; d: "push"; text: string };
+  | { t: "clip"; d: "push"; text: string }
+  | {
+      t: "chat";
+      id: string;
+      at: number;
+      from: "host" | "controller";
+      text: string;
+    };

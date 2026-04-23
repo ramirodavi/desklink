@@ -16,6 +16,10 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 - Modo somente visualização (desabilita envio de input).
 - Sincronização opcional de clipboard (texto) entre controlador e host.
 - Ajuste de sensibilidade de rolagem em tempo real (baixa/média/alta).
+- Chat em tempo real entre controlador e host, com suporte a emojis.
+- Notificações de nova mensagem:
+  - controlador: Web Notification (apenas quando aba/janela não está ativa);
+  - host (Windows): notificação nativa + piscar na barra quando a janela está sem foco/minimizada.
 
 ---
 
@@ -110,6 +114,14 @@ npm run dev -w agent
 - A rolagem usa normalização e coalescência para reduzir picos de eventos.
 - O seletor de sensibilidade de rolagem aplica sem reconectar (baixa/média/alta).
 - Para comandos de sistema, prefira o painel de atalhos.
+- Chat durante a sessão:
+  - `Enter` envia mensagem;
+  - `Shift+Enter` quebra linha;
+  - botão de emoji abre o seletor acima do botão;
+  - tecla `Win+Ç` também abre o seletor (quando o navegador/SO permite capturar a combinação).
+- No host (agent), ao conectar:
+  - as seções "Servidor" e "Código da sessão" ficam ocultas para priorizar "Tela" e "Conversa com o controlador";
+  - a área de mensagens do chat se ajusta dinamicamente quando a área digitável é redimensionada.
 
 ---
 
@@ -209,6 +221,7 @@ Validação recomendada antes de publicar release:
    - troca de monitor remoto (`F8`);
    - rolagem em baixa/média/alta;
    - clipboard opcional habilitado;
+   - chat (envio com `Enter`, quebra com `Shift+Enter`, emojis e notificações em segundo plano);
    - endpoint `GET /api/brand-icon`.
 
 ---
@@ -236,7 +249,7 @@ Validação recomendada antes de publicar release:
 ## ⚠️ Limites atuais
 
 - Uma sessão com 1 host e 1 controlador.
-- Sem transferência de arquivos e sem chat.
+- Sem transferência de arquivos.
 - Atalhos `Win+...` podem ser interceptados pelo SO local do controlador.
 - Layouts de teclado muito diferentes podem causar variação em atalhos/composições.
 - Clipboard sincroniza apenas texto, com limite aproximado de 256 KB por envio.

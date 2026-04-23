@@ -200,6 +200,9 @@ export async function applyControlJson(json: string): Promise<void> {
     case "monitor": {
       break;
     }
+    case "chat": {
+      break;
+    }
     default:
       break;
   }
