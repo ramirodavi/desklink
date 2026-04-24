@@ -24,4 +24,10 @@ export type ControlMsg =
       at: number;
       from: "host" | "controller";
       text: string;
+    }
+  | { t: "streamProfile"; profile: "economy" | "balanced" | "high" }
+  | {
+      t: "streamProfileAck";
+      profile: "economy" | "balanced" | "high";
+      applied: boolean;
     };

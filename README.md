@@ -17,6 +17,7 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 - Sincronização opcional de clipboard (texto) entre controlador e host.
 - Ajuste de sensibilidade de rolagem em tempo real (baixa/média/alta).
 - Chat em tempo real entre controlador e host, com suporte a emojis.
+- No controlador: estado **ICE/caminho** (incl. uso de TURN), **métricas leves** de sessão e **perfil de vídeo** (economia de dados / balanceado / qualidade máxima).
 - Notificações de nova mensagem:
   - controlador: Web Notification (apenas quando aba/janela não está ativa);
   - host (Windows): notificação nativa + piscar na barra quando a janela está sem foco/minimizada.
@@ -113,6 +114,8 @@ npm run dev -w agent
 - `F8` (ou botão de monitor) alterna monitor remoto ativo quando houver múltiplos displays.
 - A rolagem usa normalização e coalescência para reduzir picos de eventos.
 - O seletor de sensibilidade de rolagem aplica sem reconectar (baixa/média/alta).
+- **Conexão e rede (só no controlador):** acima dos atalhos aparecem pills com o estado **ICE** (negociação WebRTC), o **caminho** estimado (rede local, NAT na internet ou **relay via TURN**) e uma linha de **métricas** (RTT aproximado, fps recebido, perda de pacotes e qualidade *Boa / Instável / Ruim*). Passe o mouse para ver dicas em português. Se a conexão falhar com frequência entre redes diferentes, confira TURN no servidor (`METERED_*` ou `ICE_SERVERS_JSON`).
+- **Perfil de vídeo (só no controlador):** o seletor *Economia de dados*, *Balanceado* ou *Qualidade máxima* pede ao host para ajustar FPS/bitrate de envio (sem mudar a interface do host). A escolha é lembrada neste navegador (`localStorage`). Um aviso ao lado confirma se o host aplicou o perfil.
 - Para comandos de sistema, prefira o painel de atalhos.
 - Chat durante a sessão:
   - `Enter` envia mensagem;

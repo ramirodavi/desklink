@@ -29,4 +29,12 @@ export type ControlMsg =
       at: number;
       from: "host" | "controller";
       text: string;
+    }
+  /** Controlador pede ajuste de bitrate/FPS/resolução no host. */
+  | { t: "streamProfile"; profile: "economy" | "balanced" | "high" }
+  /** Host confirma se aplicou os parâmetros de encoding. */
+  | {
+      t: "streamProfileAck";
+      profile: "economy" | "balanced" | "high";
+      applied: boolean;
     };

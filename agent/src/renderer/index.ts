@@ -1,6 +1,11 @@
 import { io, type Socket } from "socket.io-client";
 import { CHAT_EMOJI_GROUPS } from "./chat-emoji-data.js";
 import type { ControlMsg } from "./protocol.js";
+import {
+  STREAM_PROFILE_CAPTURE_FPS,
+  STREAM_PROFILE_ENCODING,
+  type StreamProfileId,
+} from "../stream-profiles.js";
 
 declare global {
   interface Window {
@@ -151,6 +156,39 @@ async function applyClipSetFromClient(text: string) {
   hostClipSuppressUntil = Date.now() + CLIP_SUPPRESS_MS;
 }
 
+async function applyStreamProfileFromController(
+  profile: StreamProfileId,
+): Promise<boolean> {
+  if (!pc || !localStream) return false;
+  const track = localStream.getVideoTracks()[0];
+  if (!track) return false;
+  const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+  if (!sender) return false;
+
+  const cap = STREAM_PROFILE_CAPTURE_FPS[profile];
+  const encCfg = STREAM_PROFILE_ENCODING[profile];
+
+  try {
+    await track.applyConstraints({ frameRate: { max: cap } });
+  } catch {
+    /* ignore — setParameters ainda pode ajudar */
+  }
+
+  const params = sender.getParameters();
+  const prev =
+    params.encodings && params.encodings.length > 0
+      ? { ...params.encodings[0] }
+      : {};
+  const encodings = [{ ...prev, ...encCfg }];
+  try {
+    await sender.setParameters({ ...params, encodings });
+    return true;
+  } catch (e) {
+    console.warn("[DeskLink] streamProfile setParameters", e);
+    return false;
+  }
+}
+
 function routeControlChannelMessage(raw: string) {
   let msg: ControlMsg;
   try {
@@ -184,6 +222,24 @@ function routeControlChannelMessage(raw: string) {
     appendHostChatLine("remote", text, at);
     const preview = text.length > 140 ? `${text.slice(0, 137)}…` : text;
     void window.desklink.notifyChatMessage(preview || "(sem texto)").catch(() => {});
+    return;
+  }
+  if (msg.t === "streamProfile") {
+    const profile = msg.profile;
+    if (profile !== "economy" && profile !== "balanced" && profile !== "high") {
+      return;
+    }
+    void (async () => {
+      const applied = await applyStreamProfileFromController(profile);
+      if (controlChannel && controlChannel.readyState === "open") {
+        const ack: ControlMsg = {
+          t: "streamProfileAck",
+          profile,
+          applied,
+        };
+        controlChannel.send(JSON.stringify(ack));
+      }
+    })();
     return;
   }
   void window.desklink.applyControl(raw);

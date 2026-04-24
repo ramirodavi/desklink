@@ -1,10 +1,21 @@
 import { io, type Socket } from "socket.io-client";
 import { CHAT_EMOJI_GROUPS } from "./chat-emoji-data.js";
 import type { ControlMsg } from "./protocol.js";
+import { parseStreamProfileId } from "./stream-profiles.js";
 import {
   runShortcutSequence,
   SHORTCUT_SEQUENCES,
 } from "./shortcuts.js";
+import {
+  describeIceConnectionForUi,
+  describeIceGatheringForUi,
+} from "./webrtc-connection-info.js";
+import {
+  buildPathPillFromReport,
+  deriveQuality,
+  extractInboundVideoStats,
+  formatMetricsLine,
+} from "./webrtc-media-stats.js";
 
 document.title = "DeskLink — Controlador Remoto";
 
@@ -47,13 +58,29 @@ app.innerHTML = `
           <span class="monitor-indicator-label">Monitor: aguardando…</span>
         </button>
       </div>
+      <div class="remote-session-strip" id="connectionRow" aria-label="Estado da conexão e métricas">
+        <div class="remote-session-status">
+          <span class="connection-pill connection-pill--neutral" id="iceStatePill" title="">ICE: —</span>
+          <span class="connection-pill connection-pill--neutral" id="icePathPill" title="">Caminho: —</span>
+        </div>
+        <span class="connection-metrics" id="metricsLine" title="">Métricas: aguardando…</span>
+        <div class="remote-session-profile" title="Ajusta uso de banda e nitidez no PC remoto (bitrate e FPS de envio).">
+          <label class="inline-field-label" for="streamProfileSelect">Perfil de vídeo</label>
+          <select id="streamProfileSelect" class="toolbar-inline-select">
+            <option value="economy">Economia de dados</option>
+            <option value="balanced" selected>Balanceado</option>
+            <option value="high">Qualidade máxima</option>
+          </select>
+          <span class="profile-apply-hint" id="profileApplyHint" aria-live="polite"></span>
+        </div>
+      </div>
       <div class="remote-toolbar-actions">
         <label class="remote-control-label" title="Quando desmarcado, a área remota fica apenas em visualização (sem enviar mouse/teclado ao host).">
           <input type="checkbox" id="remoteControlEnabled" checked />
           Habilitar controle remoto
         </label>
         <label class="wheel-sensitivity-label" title="Ajusta a sensibilidade da rolagem enviada ao host. Aplique sem reconectar.">
-          Sensibilidade da rolagem
+          <span class="inline-field-label">Rolagem</span>
           <select id="wheelSensitivity">
             <option value="low">Baixa</option>
             <option value="medium" selected>Média</option>
@@ -64,6 +91,7 @@ app.innerHTML = `
           <input type="checkbox" id="clipboardSync" />
           Sincronizar área de transferência
         </label>
+        <span class="toolbar-actions-spacer" aria-hidden="true"></span>
         <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela">Focar na tela remota</button>
         <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia do navegador">Tela cheia</button>
       </div>
@@ -156,6 +184,13 @@ const chatInput = $("#chatInput") as HTMLTextAreaElement;
 const btnChatSend = $("#btnChatSend") as HTMLButtonElement;
 const btnChatEmoji = $("#btnChatEmoji") as HTMLButtonElement;
 const chatEmojiPopover = $("#chatEmojiPopover") as HTMLDivElement;
+const iceStatePill = $("#iceStatePill") as HTMLSpanElement;
+const icePathPill = $("#icePathPill") as HTMLSpanElement;
+const metricsLine = $("#metricsLine") as HTMLSpanElement;
+const streamProfileSelect = $("#streamProfileSelect") as HTMLSelectElement;
+const profileApplyHint = $("#profileApplyHint") as HTMLSpanElement;
+
+const STREAM_PROFILE_STORAGE_KEY = "desklink-stream-profile";
 
 const CHAT_MAX_CHARS = 4000;
 const CLIP_MAX_CHARS = 256 * 1024;
@@ -195,6 +230,12 @@ let wheelPendingY = 0;
 let wheelFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let wheelSensitivity: WheelSensitivity = DEFAULT_WHEEL_SENSITIVITY;
 let wheelProfile: WheelProfile = WHEEL_PROFILES[wheelSensitivity];
+
+let statsPollerId: ReturnType<typeof setInterval> | null = null;
+let lastIceUiKey = "";
+let lastPathUiKey = "";
+let lastMetricsUiKey = "";
+let profileApplyHintClearTimer: ReturnType<typeof setTimeout> | null = null;
 const HOTKEY_TOGGLE_CLIPBOARD_SYNC = "F6";
 const HOTKEY_TOGGLE_REMOTE_CONTROL = "F7";
 const HOTKEY_NEXT_MONITOR = "F8";
@@ -555,6 +596,127 @@ function setConnStatus(text: string) {
   connStatus.textContent = text;
 }
 
+function applyConnectionPillClass(
+  el: HTMLElement,
+  severity: "ok" | "warn" | "err" | "neutral",
+) {
+  el.className = "connection-pill connection-pill--" + severity;
+}
+
+function stopStatsPoller() {
+  if (statsPollerId) {
+    clearInterval(statsPollerId);
+    statsPollerId = null;
+  }
+}
+
+function resetConnectionUiToIdle() {
+  lastIceUiKey = "";
+  lastPathUiKey = "";
+  lastMetricsUiKey = "";
+  iceStatePill.textContent = "ICE: —";
+  iceStatePill.title = "";
+  applyConnectionPillClass(iceStatePill, "neutral");
+  icePathPill.textContent = "Caminho: —";
+  icePathPill.title = "";
+  applyConnectionPillClass(icePathPill, "neutral");
+  metricsLine.textContent = "Métricas indisponíveis.";
+  metricsLine.title = "";
+  clearProfileApplyHint();
+}
+
+function clearProfileApplyHint() {
+  if (profileApplyHintClearTimer) {
+    clearTimeout(profileApplyHintClearTimer);
+    profileApplyHintClearTimer = null;
+  }
+  profileApplyHint.textContent = "";
+  profileApplyHint.className = "profile-apply-hint";
+  profileApplyHint.removeAttribute("title");
+}
+
+async function refreshConnectionFromStats() {
+  if (!pc) return;
+  let report: RTCStatsReport;
+  try {
+    report = await pc.getStats();
+  } catch {
+    return;
+  }
+
+  const ice = pc.iceConnectionState;
+  const conn = pc.connectionState;
+  const gather = pc.iceGatheringState;
+
+  const iceUi = describeIceConnectionForUi(ice, conn);
+  let iceText = iceUi.text;
+  const gExtra = describeIceGatheringForUi(gather);
+  if (gExtra && ice !== "failed" && conn !== "failed") {
+    iceText += gExtra.suffix;
+  }
+  const iceHint = [iceUi.hint, gExtra?.hint].filter(Boolean).join(" ").trim();
+  const iceKey = `${iceText}|${iceUi.severity}`;
+  if (iceKey !== lastIceUiKey) {
+    lastIceUiKey = iceKey;
+    iceStatePill.textContent = iceText;
+    iceStatePill.title = iceHint;
+    applyConnectionPillClass(iceStatePill, iceUi.severity);
+  }
+
+  const path = buildPathPillFromReport(report);
+  const pathKey = `${path.label}|${path.hint}`;
+  if (pathKey !== lastPathUiKey) {
+    lastPathUiKey = pathKey;
+    icePathPill.textContent = path.label;
+    icePathPill.title = path.hint;
+    const low = path.label.toLowerCase();
+    const pathSev: "ok" | "warn" | "neutral" =
+      low.includes("turn") || low.includes("relay")
+        ? "warn"
+        : low.includes("em análise")
+          ? "neutral"
+          : "ok";
+    applyConnectionPillClass(icePathPill, pathSev);
+  }
+
+  const snap = extractInboundVideoStats(report);
+  const quality = deriveQuality(snap);
+  const line = formatMetricsLine(snap, quality);
+  const metricsKey = `${line}|${quality.reasons.join("·")}`;
+  if (metricsKey !== lastMetricsUiKey) {
+    lastMetricsUiKey = metricsKey;
+    metricsLine.textContent = line;
+    metricsLine.title = quality.reasons.join(" ");
+  }
+}
+
+function startStatsPoller() {
+  stopStatsPoller();
+  void refreshConnectionFromStats();
+  statsPollerId = setInterval(() => {
+    void refreshConnectionFromStats();
+  }, 1500);
+}
+
+function wirePeerConnectionIceUi(pcRef: RTCPeerConnection) {
+  const bump = () => {
+    void refreshConnectionFromStats();
+  };
+  pcRef.onicegatheringstatechange = bump;
+  pcRef.oniceconnectionstatechange = bump;
+  pcRef.onconnectionstatechange = () => {
+    bump();
+    const st = pcRef.connectionState;
+    if (st === "failed") {
+      setConnStatus(
+        "WebRTC: falha na conexão. Verifique rede, firewall e TURN no servidor.",
+      );
+    } else if (st === "disconnected") {
+      setConnStatus("WebRTC: desconectado.");
+    }
+  };
+}
+
 /** Base do servidor DeskLink (origem), sempre com esquema http(s) */
 function normalizeServerBase(raw: string): string {
   const t = raw.trim();
@@ -613,6 +775,8 @@ function disableClientClipboardSync(notifyHost: boolean) {
 }
 
 function cleanupPeer() {
+  stopStatsPoller();
+  resetConnectionUiToIdle();
   disableClientClipboardSync(true);
   resetWheelState();
   controlSend?.close();
@@ -726,6 +890,31 @@ wheelSensitivitySelect.addEventListener("change", () => {
   if (!parsed) return;
   applyWheelSensitivity(parsed, false);
   setConnStatus(`Sensibilidade da rolagem: ${parsed === "low" ? "baixa" : parsed === "high" ? "alta" : "média"}.`);
+});
+
+streamProfileSelect.addEventListener("change", () => {
+  clearProfileApplyHint();
+  const prof = parseStreamProfileId(streamProfileSelect.value);
+  if (!prof) return;
+  try {
+    localStorage.setItem(STREAM_PROFILE_STORAGE_KEY, prof);
+  } catch {
+    /* ignore */
+  }
+  if (!controlSend || controlSend.readyState !== "open") {
+    setConnStatus(
+      "Conecte o canal de controle antes de alterar o perfil de vídeo.",
+    );
+    return;
+  }
+  try {
+    const m: ControlMsg = { t: "streamProfile", profile: prof };
+    controlSend.send(JSON.stringify(m));
+  } catch {
+    setConnStatus(
+      "Não foi possível enviar o perfil de vídeo. Aguarde o canal de controle.",
+    );
+  }
 });
 
 remoteControlCheckbox.addEventListener("change", () => {
@@ -873,6 +1062,30 @@ function handleControlMessageFromHost(raw: string) {
     notifyClientChatIncoming(text);
     return;
   }
+  if (msg.t === "streamProfileAck") {
+    if (profileApplyHintClearTimer) {
+      clearTimeout(profileApplyHintClearTimer);
+      profileApplyHintClearTimer = null;
+    }
+    if (msg.applied) {
+      profileApplyHint.textContent = "✓ aplicado";
+      profileApplyHint.className = "profile-apply-hint profile-apply-hint--ok";
+      profileApplyHint.title = "O host confirmou este perfil de vídeo.";
+      profileApplyHintClearTimer = setTimeout(() => {
+        profileApplyHintClearTimer = null;
+        profileApplyHint.textContent = "";
+        profileApplyHint.className = "profile-apply-hint";
+        profileApplyHint.removeAttribute("title");
+      }, 2600);
+    } else {
+      profileApplyHint.textContent = "Não aplicado";
+      profileApplyHint.className =
+        "profile-apply-hint profile-apply-hint--warn";
+      profileApplyHint.title =
+        "O host não pôde aplicar o perfil (restrição do navegador ou estado da sessão).";
+    }
+    return;
+  }
   if (msg.t === "clip" && msg.d === "push") {
     if (!clientClipboardSync) return;
     const text = typeof msg.text === "string" ? msg.text : "";
@@ -933,6 +1146,27 @@ function setupControlChannel(channel: RTCDataChannel) {
   setConnStatus(
     "Canal de controle pronto. Clique na área remota para capturar teclado e mouse.",
   );
+
+  const sendSavedStreamProfile = () => {
+    const prof = parseStreamProfileId(streamProfileSelect.value);
+    if (!prof || !controlSend || controlSend.readyState !== "open") return;
+    try {
+      const m: ControlMsg = { t: "streamProfile", profile: prof };
+      controlSend.send(JSON.stringify(m));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  if (channel.readyState === "open") {
+    setTimeout(sendSavedStreamProfile, 400);
+  } else {
+    channel.addEventListener(
+      "open",
+      () => setTimeout(sendSavedStreamProfile, 400),
+      { once: true },
+    );
+  }
 
   overlay.addEventListener(
     "contextmenu",
@@ -1053,12 +1287,8 @@ async function startControllerWebRtc(iceServers: RTCIceServer[]) {
     );
   };
 
-  pc.onconnectionstatechange = () => {
-    const st = pc?.connectionState;
-    if (st === "failed" || st === "disconnected") {
-      setConnStatus(`WebRTC: ${st ?? "?"}`);
-    }
-  };
+  wirePeerConnectionIceUi(pc);
+  startStatsPoller();
 
   pc.onicecandidate = (ev) => {
     if (!socket || !currentSessionId) return;
@@ -1115,6 +1345,14 @@ async function startControllerWebRtc(iceServers: RTCIceServer[]) {
   remotePanel.classList.remove("hidden");
   btnDisconnect.disabled = false;
   setStatus("Aguardando vídeo do host…", "ok");
+
+  try {
+    const saved = localStorage.getItem(STREAM_PROFILE_STORAGE_KEY);
+    const p = saved ? parseStreamProfileId(saved) : null;
+    if (p) streamProfileSelect.value = p;
+  } catch {
+    /* ignore */
+  }
 }
 
 btnConnect.addEventListener("click", async () => {
