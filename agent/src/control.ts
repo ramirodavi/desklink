@@ -203,6 +203,11 @@ export async function applyControlJson(json: string): Promise<void> {
     case "chat": {
       break;
     }
+    case "annotate":
+    case "streamProfile":
+    case "streamProfileAck": {
+      break;
+    }
     default:
       break;
   }

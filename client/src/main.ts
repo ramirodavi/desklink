@@ -91,16 +91,19 @@ app.innerHTML = `
           <input type="checkbox" id="clipboardSync" />
           Sincronizar área de transferência
         </label>
-        <span class="toolbar-actions-spacer" aria-hidden="true"></span>
-        <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela">Focar na tela remota</button>
-        <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia do navegador">Tela cheia</button>
+        <label class="pen-mode-label" title="Desenhar anotações vermelhas na tela remota do host (atalho F9). Enquanto ativo, o mouse não controla o PC remoto.">
+          <input type="checkbox" id="penModeCheckbox" />
+          Modo caneta (anotações no host)
+        </label>
+        <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela (F10)">Focar na tela remota</button>
+        <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia da área remota (F11; alguns navegadores reservam F11)">Tela cheia</button>
       </div>
     </div>
     <div class="shortcut-panel" id="shortcutPanel">
       <div class="shortcut-panel-head">
         <span class="shortcut-panel-title">Atalhos no PC remoto</span>
         <span class="shortcut-panel-hint">Envia o comando direto ao host (útil quando Win+… não chega pelo teclado local).</span>
-        <span class="shortcut-panel-hint">Teclas rápidas: <kbd>F6</kbd> (sincronizar área de transferência), <kbd>F7</kbd> (habilitar controle remoto), <kbd>F8</kbd> (alternar monitor), <kbd>F9</kbd> (focar tela remota), <kbd>F10</kbd> (tela cheia).</span>
+        <span class="shortcut-panel-hint">Teclas rápidas: <kbd>F6</kbd> (sincronizar área de transferência), <kbd>F7</kbd> (habilitar controle remoto), <kbd>F8</kbd> (alternar monitor), <kbd>F9</kbd> (modo caneta / anotações no host), <kbd>F10</kbd> (focar tela remota), <kbd>F11</kbd> (tela cheia da área remota).</span>
       </div>
       <div class="shortcut-groups">
         <div class="shortcut-group">
@@ -139,6 +142,7 @@ app.innerHTML = `
       <div class="remote-wrap">
         <video id="remoteVideo" autoplay playsinline muted></video>
         <div class="overlay" id="overlay" tabindex="0"></div>
+        <canvas class="annotate-canvas" id="annotateCanvas" aria-hidden="true"></canvas>
       </div>
     </div>
     <section class="chat-panel" id="chatPanel" aria-label="Conversa com o host">
@@ -169,6 +173,9 @@ const statusEl = $("#status");
 const remotePanel = $("#remotePanel");
 const remoteVideo = $("#remoteVideo") as HTMLVideoElement;
 const overlay = $("#overlay") as HTMLDivElement;
+const remoteWrap = overlay.parentElement as HTMLDivElement;
+const annotateCanvas = $("#annotateCanvas") as HTMLCanvasElement;
+const penModeCheckbox = $("#penModeCheckbox") as HTMLInputElement;
 const connStatus = $("#connStatus");
 const monitorIndicator = $("#monitorIndicator") as HTMLButtonElement;
 const remoteStage = $("#remoteStage") as HTMLDivElement;
@@ -220,6 +227,10 @@ let clientSuppressAfterHostPush = 0;
 let socket: Socket | null = null;
 let pc: RTCPeerConnection | null = null;
 let controlSend: RTCDataChannel | null = null;
+let penMode = false;
+let annotatePenHandlersWired = false;
+let penStrokeActive = false;
+let penSegmentNorm: { x: number; y: number }[] = [];
 let currentSessionId = "";
 /** ICE pode chegar antes do SDP remoto — sem fila a mídia nunca conecta */
 let pendingIce: RTCIceCandidateInit[] = [];
@@ -239,8 +250,9 @@ let profileApplyHintClearTimer: ReturnType<typeof setTimeout> | null = null;
 const HOTKEY_TOGGLE_CLIPBOARD_SYNC = "F6";
 const HOTKEY_TOGGLE_REMOTE_CONTROL = "F7";
 const HOTKEY_NEXT_MONITOR = "F8";
-const HOTKEY_FOCUS_REMOTE = "F9";
-const HOTKEY_TOGGLE_FULLSCREEN = "F10";
+const HOTKEY_TOGGLE_PEN_MODE = "F9";
+const HOTKEY_FOCUS_REMOTE = "F10";
+const HOTKEY_TOGGLE_FULLSCREEN = "F11";
 const monitorIndicatorLabel = monitorIndicator.querySelector(
   ".monitor-indicator-label",
 ) as HTMLSpanElement;
@@ -570,6 +582,13 @@ function handleGlobalFunctionHotkeys(ev: KeyboardEvent): boolean {
     return true;
   }
 
+  if (ev.code === HOTKEY_TOGGLE_PEN_MODE) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setPenMode(!penMode);
+    return true;
+  }
+
   if (ev.code === HOTKEY_FOCUS_REMOTE) {
     ev.preventDefault();
     ev.stopPropagation();
@@ -775,6 +794,20 @@ function disableClientClipboardSync(notifyHost: boolean) {
 }
 
 function cleanupPeer() {
+  if (penMode && controlSend?.readyState === "open") {
+    try {
+      const clearMsg: ControlMsg = { t: "annotate", d: "clear" };
+      controlSend.send(JSON.stringify(clearMsg));
+    } catch {
+      /* ignore */
+    }
+  }
+  penMode = false;
+  penModeCheckbox.checked = false;
+  remoteWrap.classList.remove("pen-mode");
+  penStrokeActive = false;
+  penSegmentNorm = [];
+  clearAnnotateCanvas();
   stopStatsPoller();
   resetConnectionUiToIdle();
   disableClientClipboardSync(true);
@@ -929,6 +962,10 @@ remoteControlCheckbox.addEventListener("change", () => {
   setConnStatus("Controle remoto ativado. Clique na área remota para capturar teclado e mouse.");
 });
 
+penModeCheckbox.addEventListener("change", () => {
+  setPenMode(penModeCheckbox.checked);
+});
+
 btnChatEmoji.addEventListener("click", (e) => {
   e.stopPropagation();
   toggleClientChatEmojiPopover();
@@ -1038,6 +1075,154 @@ function clientToVideoNorm(clientX: number, clientY: number): {
   };
 }
 
+function clearAnnotateCanvas() {
+  const ctx = annotateCanvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, annotateCanvas.width, annotateCanvas.height);
+}
+
+function syncAnnotateCanvasSize() {
+  const rect = overlay.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  if (annotateCanvas.width !== w || annotateCanvas.height !== h) {
+    annotateCanvas.width = w;
+    annotateCanvas.height = h;
+  }
+}
+
+function setPenMode(on: boolean) {
+  if (penMode === on) return;
+  if (on) {
+    if (!controlSend || controlSend.readyState !== "open") {
+      penModeCheckbox.checked = false;
+      setConnStatus("Conecte o canal de controle para usar o modo caneta.");
+      return;
+    }
+  } else {
+    if (controlSend?.readyState === "open") {
+      try {
+        const clearMsg: ControlMsg = { t: "annotate", d: "clear" };
+        controlSend.send(JSON.stringify(clearMsg));
+      } catch {
+        /* ignore */
+      }
+    }
+    clearAnnotateCanvas();
+  }
+  penMode = on;
+  penModeCheckbox.checked = on;
+  remoteWrap.classList.toggle("pen-mode", on);
+  setConnStatus(
+    on
+      ? "Modo caneta (F9): desenhe no vídeo — traço aparece no host. O mouse não controla o remoto."
+      : "Modo caneta desligado; anotações no host foram limpas.",
+  );
+}
+
+function ensureAnnotatePenHandlers() {
+  if (annotatePenHandlersWired) return;
+  annotatePenHandlersWired = true;
+  const ctx = annotateCanvas.getContext("2d");
+  if (!ctx) return;
+
+  function normsToCanvasPixels(points: { x: number; y: number }[]) {
+    return points.map((p) => {
+      const rect = overlay.getBoundingClientRect();
+      const vw = remoteVideo.videoWidth;
+      const vh = remoteVideo.videoHeight;
+      if (!vw || !vh) {
+        return { x: p.x * rect.width, y: p.y * rect.height };
+      }
+      const rw = rect.width;
+      const rh = rect.height;
+      const scale = Math.min(rw / vw, rh / vh);
+      const dispW = vw * scale;
+      const dispH = vh * scale;
+      const offX = (rw - dispW) / 2;
+      const offY = (rh - dispH) / 2;
+      return { x: offX + p.x * dispW, y: offY + p.y * dispH };
+    });
+  }
+
+  function strokeLocalIncremental(a: { x: number; y: number }, b: { x: number; y: number }) {
+    syncAnnotateCanvasSize();
+    const pix = normsToCanvasPixels([a, b]);
+    ctx.strokeStyle = "#e02020";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(pix[0].x, pix[0].y);
+    ctx.lineTo(pix[1].x, pix[1].y);
+    ctx.stroke();
+  }
+
+  annotateCanvas.addEventListener("pointerdown", (ev) => {
+    if (!penMode || !controlSend || controlSend.readyState !== "open") return;
+    ev.preventDefault();
+    penStrokeActive = true;
+    penSegmentNorm = [];
+    try {
+      annotateCanvas.setPointerCapture(ev.pointerId);
+    } catch {
+      /* ignore */
+    }
+    const n = clientToVideoNorm(ev.clientX, ev.clientY);
+    if (!n) return;
+    penSegmentNorm.push(n);
+  });
+
+  annotateCanvas.addEventListener("pointermove", (ev) => {
+    if (!penStrokeActive || !penMode) return;
+    const n = clientToVideoNorm(ev.clientX, ev.clientY);
+    if (!n) return;
+    const prev = penSegmentNorm[penSegmentNorm.length - 1];
+    penSegmentNorm.push(n);
+    strokeLocalIncremental(prev, n);
+  });
+
+  const endPenStroke = (ev: PointerEvent) => {
+    if (!penStrokeActive) return;
+    penStrokeActive = false;
+    try {
+      if (annotateCanvas.hasPointerCapture(ev.pointerId)) {
+        annotateCanvas.releasePointerCapture(ev.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!controlSend || controlSend.readyState !== "open") {
+      penSegmentNorm = [];
+      return;
+    }
+    if (penSegmentNorm.length >= 2) {
+      const msg: ControlMsg = {
+        t: "annotate",
+        d: "segment",
+        points: penSegmentNorm.map((q) => ({ x: q.x, y: q.y })),
+      };
+      try {
+        controlSend.send(JSON.stringify(msg));
+      } catch {
+        /* ignore */
+      }
+    }
+    penSegmentNorm = [];
+  };
+
+  annotateCanvas.addEventListener("pointerup", endPenStroke);
+  annotateCanvas.addEventListener("pointercancel", endPenStroke);
+
+  window.addEventListener("resize", () => {
+    if (!penMode) return;
+    syncAnnotateCanvasSize();
+  });
+  remoteVideo.addEventListener("loadedmetadata", () => {
+    syncAnnotateCanvasSize();
+  });
+}
+
 function sendMove(x: number, y: number) {
   if (!controlSend || controlSend.readyState !== "open") return;
   const msg: ControlMsg = { t: "move", x, y };
@@ -1131,6 +1316,7 @@ function startClientClipboardPoll() {
 }
 
 function setupControlChannel(channel: RTCDataChannel) {
+  ensureAnnotatePenHandlers();
   controlSend = channel;
   applyWheelSensitivity(DEFAULT_WHEEL_SENSITIVITY);
   let lastNorm: { x: number; y: number } | null = null;
@@ -1178,6 +1364,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   );
 
   overlay.addEventListener("pointermove", (ev) => {
+    if (penMode) return;
     if (!remoteControlEnabled) return;
     if (!controlSend || controlSend.readyState !== "open") return;
     const n = clientToVideoNorm(ev.clientX, ev.clientY);
@@ -1187,6 +1374,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   });
 
   overlay.addEventListener("pointerdown", (ev) => {
+    if (penMode) return;
     if (!remoteControlEnabled) return;
     ev.preventDefault();
     captureKeys = true;
@@ -1206,6 +1394,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   });
 
   overlay.addEventListener("pointerup", (ev) => {
+    if (penMode) return;
     if (!remoteControlEnabled) return;
     ev.preventDefault();
     try {
@@ -1228,6 +1417,7 @@ function setupControlChannel(channel: RTCDataChannel) {
   overlay.addEventListener(
     "wheel",
     (ev) => {
+      if (penMode) return;
       if (!remoteControlEnabled) return;
       ev.preventDefault();
       if (!controlSend || controlSend.readyState !== "open") return;

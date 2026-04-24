@@ -18,6 +18,12 @@ declare global {
       setActiveDisplayBounds: (
         bounds: { x: number; y: number; width: number; height: number } | null,
       ) => Promise<void>;
+      annotateStroke: (payload: {
+        bounds: { x: number; y: number; width: number; height: number };
+        points: { x: number; y: number }[];
+      }) => Promise<void>;
+      annotateClear: () => Promise<void>;
+      annotateClose: () => Promise<void>;
       notifyChatMessage: (preview: string) => Promise<void>;
     };
   }
@@ -240,6 +246,27 @@ function routeControlChannelMessage(raw: string) {
         controlChannel.send(JSON.stringify(ack));
       }
     })();
+    return;
+  }
+  if (msg.t === "annotate") {
+    if (msg.d === "clear") {
+      void window.desklink.annotateClear().catch(() => {});
+      return;
+    }
+    if (msg.d === "segment") {
+      const pts = msg.points;
+      if (!Array.isArray(pts) || pts.length < 2) return;
+      const b = desktopSources[activeSourceIdx]?.bounds;
+      if (!b) return;
+      const local = pts.map((p) => ({
+        x: Math.round(p.x * b.width),
+        y: Math.round(p.y * b.height),
+      }));
+      void window.desklink
+        .annotateStroke({ bounds: b, points: local })
+        .catch(() => {});
+      return;
+    }
     return;
   }
   void window.desklink.applyControl(raw);
@@ -618,6 +645,7 @@ btnCopy.addEventListener("click", async () => {
 });
 
 function cleanupPeer() {
+  void window.desklink.annotateClose().catch(() => {});
   stopHostClipboardSync();
   resetHostWheelState();
   hideHostChatPanel();

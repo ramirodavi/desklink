@@ -37,4 +37,7 @@ export type ControlMsg =
       t: "streamProfileAck";
       profile: "economy" | "balanced" | "high";
       applied: boolean;
-    };
+    }
+  /** Anotações desenhadas pelo controlador (coords normalizadas 0–1 no vídeo). */
+  | { t: "annotate"; d: "segment"; points: { x: number; y: number }[] }
+  | { t: "annotate"; d: "clear" };

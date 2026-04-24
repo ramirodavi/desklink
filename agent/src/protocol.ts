@@ -30,4 +30,6 @@ export type ControlMsg =
       t: "streamProfileAck";
       profile: "economy" | "balanced" | "high";
       applied: boolean;
-    };
+    }
+  | { t: "annotate"; d: "segment"; points: { x: number; y: number }[] }
+  | { t: "annotate"; d: "clear" };

@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld("desklink", {
   setActiveDisplayBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null,
   ) => ipcRenderer.invoke("desklink-set-active-display-bounds", bounds) as Promise<void>,
+  annotateStroke: (payload: {
+    bounds: { x: number; y: number; width: number; height: number };
+    points: { x: number; y: number }[];
+  }) => ipcRenderer.invoke("desklink-annotate-stroke", payload) as Promise<void>,
+  annotateClear: () => ipcRenderer.invoke("desklink-annotate-clear") as Promise<void>,
+  annotateClose: () => ipcRenderer.invoke("desklink-annotate-close") as Promise<void>,
   notifyChatMessage: (preview: string) =>
     ipcRenderer.invoke("desklink-notify-chat", preview) as Promise<void>,
 });
@@ -32,6 +38,12 @@ export type DesklinkPreload = {
   setActiveDisplayBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null,
   ) => Promise<void>;
+  annotateStroke: (payload: {
+    bounds: { x: number; y: number; width: number; height: number };
+    points: { x: number; y: number }[];
+  }) => Promise<void>;
+  annotateClear: () => Promise<void>;
+  annotateClose: () => Promise<void>;
   notifyChatMessage: (preview: string) => Promise<void>;
 };
 

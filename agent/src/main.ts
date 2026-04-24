@@ -60,6 +60,98 @@ function loadControlModule(): Promise<ControlModule> {
   return controlModulePromise;
 }
 
+let annotateOverlay: BrowserWindow | null = null;
+/** Último tamanho lógico do canvas no overlay (evita redimensionar a cada traço — reset do canvas apaga o histórico). */
+let annotateOverlayCanvasPx: { w: number; h: number } | null = null;
+
+const ANNOTATE_OVERLAY_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;overflow:hidden;background:transparent}#c{display:block}</style></head><body><canvas id="c"></canvas><script>
+const c=document.getElementById("c");
+const ctx=c.getContext("2d");
+window.__deskAnnotateResize=function(w,h){c.width=w;c.height=h;};
+window.__deskAnnotateClear=function(){ctx.clearRect(0,0,c.width,c.height);};
+window.__deskAnnotateStroke=function(pts){if(!pts||pts.length<2)return;ctx.strokeStyle="#e02020";ctx.lineWidth=3;ctx.lineJoin="round";ctx.lineCap="round";ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.stroke();};
+</script></body></html>`;
+
+function closeAnnotateOverlay() {
+  annotateOverlayCanvasPx = null;
+  if (!annotateOverlay || annotateOverlay.isDestroyed()) {
+    annotateOverlay = null;
+    return;
+  }
+  annotateOverlay.close();
+  annotateOverlay = null;
+}
+
+function ensureAnnotateOverlay(bounds: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}): BrowserWindow {
+  const bx = Math.round(bounds.x);
+  const by = Math.round(bounds.y);
+  const bw = Math.max(1, Math.round(bounds.width));
+  const bh = Math.max(1, Math.round(bounds.height));
+  if (annotateOverlay && !annotateOverlay.isDestroyed()) {
+    annotateOverlay.setBounds({ x: bx, y: by, width: bw, height: bh });
+    const sizeChanged =
+      !annotateOverlayCanvasPx ||
+      annotateOverlayCanvasPx.w !== bw ||
+      annotateOverlayCanvasPx.h !== bh;
+    if (sizeChanged) {
+      annotateOverlayCanvasPx = { w: bw, h: bh };
+      void annotateOverlay.webContents.executeJavaScript(
+        `try{window.__deskAnnotateResize(${bw},${bh});}catch(e){}`,
+      );
+    }
+    return annotateOverlay;
+  }
+  const win = new BrowserWindow({
+    x: bx,
+    y: by,
+    width: bw,
+    height: bh,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    show: false,
+    hasShadow: false,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false,
+    },
+  });
+  win.setIgnoreMouseEvents(true, { forward: true });
+  win.loadURL(
+    "data:text/html;charset=utf-8," + encodeURIComponent(ANNOTATE_OVERLAY_HTML),
+  );
+  annotateOverlayCanvasPx = { w: bw, h: bh };
+  win.webContents.once("did-finish-load", () => {
+    if (!win.isDestroyed()) {
+      void win.webContents.executeJavaScript(
+        `try{window.__deskAnnotateResize(${bw},${bh});}catch(e){}`,
+      );
+    }
+  });
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) win.showInactive();
+  });
+  annotateOverlay = win;
+  win.on("closed", () => {
+    if (annotateOverlay === win) annotateOverlay = null;
+    annotateOverlayCanvasPx = null;
+  });
+  return win;
+}
+
 function clearSplashFallback() {
   if (splashFallbackTimer) {
     clearTimeout(splashFallbackTimer);
@@ -348,26 +440,90 @@ ipcMain.handle("apply-control", async (_e, json: string) => {
   await mod.applyControlJson(json);
 });
 
+function isDisplayBounds(
+  bounds: unknown,
+): bounds is { x: number; y: number; width: number; height: number } {
+  return (
+    typeof bounds === "object" &&
+    bounds !== null &&
+    typeof (bounds as { x?: unknown }).x === "number" &&
+    typeof (bounds as { y?: unknown }).y === "number" &&
+    typeof (bounds as { width?: unknown }).width === "number" &&
+    typeof (bounds as { height?: unknown }).height === "number"
+  );
+}
+
 ipcMain.handle(
   "desklink-set-active-display-bounds",
   async (_e, bounds: unknown) => {
-    if (
-      bounds &&
-      typeof bounds === "object" &&
-      typeof (bounds as { x?: unknown }).x === "number" &&
-      typeof (bounds as { y?: unknown }).y === "number" &&
-      typeof (bounds as { width?: unknown }).width === "number" &&
-      typeof (bounds as { height?: unknown }).height === "number"
-    ) {
-      const b = bounds as { x: number; y: number; width: number; height: number };
+    if (isDisplayBounds(bounds)) {
+      const b = bounds;
       const mod = await loadControlModule();
       mod.setActiveDisplayBounds(b);
+      if (annotateOverlay && !annotateOverlay.isDestroyed()) {
+        ensureAnnotateOverlay(b);
+        void annotateOverlay.webContents.executeJavaScript(
+          "try{window.__deskAnnotateClear();}catch(e){}",
+        );
+      }
       return;
     }
     const mod = await loadControlModule();
     mod.setActiveDisplayBounds(null);
+    closeAnnotateOverlay();
   },
 );
+
+ipcMain.handle("desklink-annotate-stroke", async (_e, payload: unknown) => {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !isDisplayBounds((payload as { bounds?: unknown }).bounds)
+  ) {
+    return;
+  }
+  const { bounds, points } = payload as {
+    bounds: { x: number; y: number; width: number; height: number };
+    points: unknown;
+  };
+  if (!Array.isArray(points) || points.length < 2) return;
+  const local: { x: number; y: number }[] = [];
+  for (const p of points) {
+    if (
+      typeof p !== "object" ||
+      p === null ||
+      typeof (p as { x?: unknown }).x !== "number" ||
+      typeof (p as { y?: unknown }).y !== "number"
+    ) {
+      return;
+    }
+    local.push({
+      x: Math.round((p as { x: number }).x),
+      y: Math.round((p as { y: number }).y),
+    });
+  }
+  const win = ensureAnnotateOverlay(bounds);
+  if (win.webContents.isLoading()) {
+    await new Promise<void>((resolve) => {
+      win.webContents.once("did-finish-load", resolve);
+    });
+  }
+  const ptsJson = JSON.stringify(local);
+  await win.webContents.executeJavaScript(
+    `try{window.__deskAnnotateStroke(${ptsJson});}catch(e){}`,
+  );
+});
+
+ipcMain.handle("desklink-annotate-clear", async () => {
+  if (!annotateOverlay || annotateOverlay.isDestroyed()) return;
+  void annotateOverlay.webContents.executeJavaScript(
+    "try{window.__deskAnnotateClear();}catch(e){}",
+  );
+});
+
+ipcMain.handle("desklink-annotate-close", () => {
+  closeAnnotateOverlay();
+});
 
 ipcMain.handle("desklink-notify-session", () => {
   mainWindow?.minimize();
