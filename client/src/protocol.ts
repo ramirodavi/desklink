@@ -40,4 +40,6 @@ export type ControlMsg =
     }
   /** Anotações desenhadas pelo controlador (coords normalizadas 0–1 no vídeo). */
   | { t: "annotate"; d: "segment"; points: { x: number; y: number }[] }
-  | { t: "annotate"; d: "clear" };
+  | { t: "annotate"; d: "clear" }
+  /** Host notifica novo ciclo de input remoto (soltar estado local no controlador). */
+  | { t: "inputReset"; sessionEpoch: number };

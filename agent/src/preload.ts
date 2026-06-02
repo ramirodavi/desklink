@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("desklink", {
   getDesktopSources: () =>
     ipcRenderer.invoke("desktop-sources") as Promise<DesktopSource[]>,
   applyControl: (json: string) => ipcRenderer.invoke("apply-control", json),
+  releaseAllRemoteInput: () =>
+    ipcRenderer.invoke("desklink-release-all-input") as Promise<void>,
   notifySessionActive: () => ipcRenderer.invoke("desklink-notify-session"),
   readClipboard: () =>
     ipcRenderer.invoke("desklink-clipboard-read") as Promise<string>,
@@ -32,6 +34,7 @@ contextBridge.exposeInMainWorld("desklink", {
 export type DesklinkPreload = {
   getDesktopSources: () => Promise<DesktopSource[]>;
   applyControl: (json: string) => Promise<void>;
+  releaseAllRemoteInput: () => Promise<void>;
   notifySessionActive: () => Promise<void>;
   readClipboard: () => Promise<string>;
   writeClipboard: (text: string) => Promise<void>;

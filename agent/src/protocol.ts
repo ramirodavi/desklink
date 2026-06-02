@@ -32,4 +32,5 @@ export type ControlMsg =
       applied: boolean;
     }
   | { t: "annotate"; d: "segment"; points: { x: number; y: number }[] }
-  | { t: "annotate"; d: "clear" };
+  | { t: "annotate"; d: "clear" }
+  | { t: "inputReset"; sessionEpoch: number };

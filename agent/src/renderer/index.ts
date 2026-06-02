@@ -12,6 +12,7 @@ declare global {
     desklink: {
       getDesktopSources: () => Promise<DesktopSource[]>;
       applyControl: (json: string) => Promise<void>;
+      releaseAllRemoteInput: () => Promise<void>;
       notifySessionActive: () => Promise<void>;
       readClipboard: () => Promise<string>;
       writeClipboard: (text: string) => Promise<void>;
@@ -555,6 +556,9 @@ let localStream: MediaStream | null = null;
 let pendingIce: RTCIceCandidateInit[] = [];
 let desktopSources: DesktopSource[] = [];
 let activeSourceIdx = -1;
+let hostSessionEpoch = 0;
+let hostSharingActive = false;
+let cachedIceServers: RTCIceServer[] = [];
 
 function setStatus(t: string, kind: "" | "ok" | "err" = "") {
   statusText.textContent = t;
@@ -573,6 +577,34 @@ function sendActiveMonitorStateToController() {
       name: src?.name ?? "",
     } satisfies ControlMsg),
   );
+}
+
+function sendInputResetToController() {
+  if (!controlChannel || controlChannel.readyState !== "open") return;
+  controlChannel.send(
+    JSON.stringify({
+      t: "inputReset",
+      sessionEpoch: hostSessionEpoch,
+    } satisfies ControlMsg),
+  );
+}
+
+function wireControlChannel(channel: RTCDataChannel) {
+  controlChannel = channel;
+  channel.onopen = () => {
+    sendInputResetToController();
+    sendActiveMonitorStateToController();
+    showHostChatPanel();
+  };
+  channel.onclose = () => {
+    void window.desklink.releaseAllRemoteInput().catch(() => {});
+  };
+  channel.onerror = () => {
+    void window.desklink.releaseAllRemoteInput().catch(() => {});
+  };
+  channel.onmessage = (ev) => {
+    routeControlChannelMessage(String(ev.data));
+  };
 }
 
 async function applyActiveSourceBounds() {
@@ -644,7 +676,11 @@ btnCopy.addEventListener("click", async () => {
   }
 });
 
-function cleanupPeer() {
+function cleanupPeer(options?: { preserveStream?: boolean; releaseInput?: boolean }) {
+  const releaseInput = options?.releaseInput !== false;
+  if (releaseInput) {
+    void window.desklink.releaseAllRemoteInput().catch(() => {});
+  }
   void window.desklink.annotateClose().catch(() => {});
   stopHostClipboardSync();
   resetHostWheelState();
@@ -652,12 +688,72 @@ function cleanupPeer() {
   controlChannel?.close();
   controlChannel = null;
   pendingIce = [];
-  localStream?.getTracks().forEach((t) => t.stop());
-  localStream = null;
-  activeSourceIdx = -1;
-  void window.desklink.setActiveDisplayBounds(null);
+  if (!options?.preserveStream) {
+    localStream?.getTracks().forEach((t) => t.stop());
+    localStream = null;
+    activeSourceIdx = -1;
+    void window.desklink.setActiveDisplayBounds(null);
+    hostSharingActive = false;
+  }
   pc?.close();
   pc = null;
+}
+
+async function startHostWebRtcFromStream(
+  stream: MediaStream,
+  iceServers: RTCIceServer[],
+): Promise<void> {
+  if (!socket?.connected) throw new Error("Socket desconectado");
+  pc = new RTCPeerConnection({ iceServers });
+  for (const track of stream.getVideoTracks()) {
+    pc.addTrack(track, stream);
+  }
+  pc.onicecandidate = (ev) => {
+    if (!socket) return;
+    socket.emit("ice-candidate", {
+      sessionId,
+      candidate: ev.candidate
+        ? {
+            candidate: ev.candidate.candidate,
+            sdpMLineIndex: ev.candidate.sdpMLineIndex,
+            sdpMid: ev.candidate.sdpMid,
+          }
+        : null,
+    });
+  };
+  hostSessionEpoch += 1;
+  wireControlChannel(pc.createDataChannel("control", { ordered: true }));
+  socket.emit("webrtc-host-ready", { sessionId });
+  hostSharingActive = true;
+  btnShare.disabled = true;
+  btnStop.disabled = false;
+  serverUrlInput.disabled = true;
+}
+
+async function renegotiateWebRtcForController(): Promise<void> {
+  if (!localStream || !socket?.connected) return;
+  setStatus("Controlador reconectou — restabelecendo vídeo…", "ok");
+  try {
+    const base = serverUrlInput.value.trim();
+    const iceServers =
+      cachedIceServers.length > 0
+        ? cachedIceServers
+        : await fetchIceServers(base);
+    cachedIceServers = iceServers;
+    cleanupPeer({ preserveStream: true, releaseInput: true });
+    if (activeSourceIdx < 0 && desktopSources.length > 0) {
+      activeSourceIdx = 0;
+    }
+    await applyActiveSourceBounds();
+    await startHostWebRtcFromStream(localStream, iceServers);
+    const src = desktopSources[activeSourceIdx];
+    setStatus(
+      `Reconectado a ${src?.name ?? "tela"}. Aguardando negociação WebRTC.`,
+      "ok",
+    );
+  } catch (e) {
+    setStatus(`Falha ao renegociar WebRTC: ${String(e)}`, "err");
+  }
 }
 
 async function flushPendingIce() {
@@ -686,6 +782,13 @@ async function fetchIceServers(base: string): Promise<RTCIceServer[]> {
 }
 
 function attachSocketHandlers(s: Socket) {
+  s.off("controller-video-ready");
+  s.off("webrtc-both-ready");
+  s.off("signal");
+  s.off("ice-candidate");
+  s.off("peer-left");
+  s.off("controller-rejoined");
+
   s.on("controller-video-ready", () => {
     void window.desklink.notifySessionActive().catch(() => {});
   });
@@ -735,16 +838,69 @@ function attachSocketHandlers(s: Socket) {
 
   s.on("peer-left", ({ role }: { role: string }) => {
     if (role !== "controller") return;
-    setStatus(
-      "Controlador desconectou. Inicie o compartilhamento de novo para nova conexão.",
-      "err",
-    );
+    if (hostSharingActive && localStream) {
+      setStatus(
+        "Controlador desconectou. Aguardando reconexão (compartilhamento ativo).",
+        "err",
+      );
+      cleanupPeer({ preserveStream: true, releaseInput: true });
+      return;
+    }
+    setStatus("Controlador desconectou.", "err");
     cleanupPeer();
-    socket?.emit("webrtc-host-reset", { sessionId });
     btnShare.disabled = !socket?.connected;
     btnStop.disabled = true;
     serverUrlInput.disabled = false;
   });
+
+  s.on(
+    "controller-rejoined",
+    (payload: { sessionId: string; sessionEpoch?: number }) => {
+      if (payload.sessionId !== sessionId) return;
+      if (typeof payload.sessionEpoch === "number") {
+        hostSessionEpoch = payload.sessionEpoch;
+      }
+      if (hostSharingActive && localStream) {
+        void renegotiateWebRtcForController();
+      }
+    },
+  );
+}
+
+function hostJoinSession(s: Socket): Promise<void> {
+  const wasSharing = hostSharingActive && localStream !== null;
+  return new Promise((resolve, reject) => {
+    s.emit(
+      "join",
+      { sessionId, role: "host", wasSharing },
+      (err: string | null) => {
+        if (err) {
+          reject(new Error(err));
+          return;
+        }
+        attachSocketHandlers(s);
+        if (wasSharing && localStream) {
+          void renegotiateWebRtcForController().finally(() => resolve());
+        } else {
+          resolve();
+        }
+      },
+    );
+  });
+}
+
+async function hostJoinSessionWithRetry(
+  s: Socket,
+  attempt = 0,
+): Promise<void> {
+  try {
+    await hostJoinSession(s);
+  } catch (e) {
+    if (attempt >= 12) throw e;
+    await new Promise((r) => setTimeout(r, 1000 + attempt * 500));
+    if (!s.connected) throw e;
+    return hostJoinSessionWithRetry(s, attempt + 1);
+  }
 }
 
 function connectSocket(): Promise<void> {
@@ -758,19 +914,55 @@ function connectSocket(): Promise<void> {
     const s = io(base, {
       path: "/socket.io",
       transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
     });
     socket = s;
-    s.once("connect_error", reject);
-    s.once("connect", () => {
-      s.off("connect_error", reject);
-      s.emit("join", { sessionId, role: "host" }, (err: string | null) => {
-        if (err) {
-          reject(new Error(err));
-          return;
-        }
-        attachSocketHandlers(s);
-        resolve();
-      });
+    let initialConnect = true;
+    let initialResolved = false;
+    const onConnectError = (err: Error) => {
+      if (initialConnect && !initialResolved) reject(err);
+    };
+    s.once("connect_error", onConnectError);
+    s.on("disconnect", () => {
+      if (hostSharingActive && localStream) {
+        setStatus("Conexão com servidor perdida. Reconectando…", "err");
+      }
+    });
+    s.on("connect", () => {
+      if (initialConnect) {
+        initialConnect = false;
+        s.off("connect_error", onConnectError);
+      }
+      void hostJoinSessionWithRetry(s)
+        .then(() => {
+          if (!initialResolved) {
+            initialResolved = true;
+            resolve();
+          }
+          if (hostSharingActive && localStream) {
+            setStatus("Reconectado ao servidor. Restabelecendo sessão…", "ok");
+          }
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!initialResolved) {
+            initialResolved = true;
+            reject(e instanceof Error ? e : new Error(msg));
+            return;
+          }
+          setStatus(
+            `Falha ao reentrar na sessão: ${msg}. Tentando de novo…`,
+            "err",
+          );
+          setTimeout(() => {
+            if (s.connected) {
+              void hostJoinSessionWithRetry(s).catch(() => {});
+            }
+          }, 2000);
+        });
     });
   });
 }
@@ -831,45 +1023,12 @@ btnShare.addEventListener("click", async () => {
     activeSourceIdx = 0;
     const stream = await createDesktopStream(first.id);
 
+    cachedIceServers = iceServers;
     cleanupPeer();
     activeSourceIdx = 0;
     localStream = stream;
     await applyActiveSourceBounds();
-
-    pc = new RTCPeerConnection({ iceServers });
-    for (const track of stream.getVideoTracks()) {
-      pc.addTrack(track, stream);
-    }
-
-    pc.onicecandidate = (ev) => {
-      if (!socket) return;
-      socket.emit("ice-candidate", {
-        sessionId,
-        candidate: ev.candidate
-          ? {
-              candidate: ev.candidate.candidate,
-              sdpMLineIndex: ev.candidate.sdpMLineIndex,
-              sdpMid: ev.candidate.sdpMid,
-            }
-          : null,
-      });
-    };
-
-    controlChannel = pc.createDataChannel("control", {
-      ordered: true,
-    });
-    controlChannel.onopen = () => {
-      sendActiveMonitorStateToController();
-      showHostChatPanel();
-    };
-    controlChannel.onmessage = (ev) => {
-      routeControlChannelMessage(String(ev.data));
-    };
-
-    socket!.emit("webrtc-host-ready", { sessionId });
-    btnShare.disabled = true;
-    btnStop.disabled = false;
-    serverUrlInput.disabled = true;
+    await startHostWebRtcFromStream(stream, iceServers);
     const monitorHint =
       desktopSources.length > 1
         ? " Use F8 no controlador para alternar monitor."
@@ -885,6 +1044,7 @@ btnShare.addEventListener("click", async () => {
 });
 
 btnStop.addEventListener("click", () => {
+  hostSharingActive = false;
   cleanupPeer();
   socket?.emit("webrtc-host-reset", { sessionId });
   btnShare.disabled = !socket?.connected;

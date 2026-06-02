@@ -22,6 +22,8 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 - Notificações de nova mensagem:
   - controlador: Web Notification (apenas quando aba/janela não está ativa);
   - host (Windows): notificação nativa + piscar na barra quando a janela está sem foco/minimizada.
+- **Reconexão automática:** quedas involuntárias de rede ou WebRTC disparam nova tentativa (Socket.io + renegociação WebRTC) sem exigir reinício do servidor ou do túnel.
+- **Retorno do controlador:** se o host ainda estiver compartilhando, a sessão WebRTC é restabelecida automaticamente quando o controlador volta com o mesmo código (grace period de ~45s no servidor).
 
 ---
 
@@ -127,6 +129,11 @@ npm run dev -w agent
 - No host (agent), ao conectar:
   - as seções "Servidor" e "Código da sessão" ficam ocultas para priorizar "Tela" e "Conversa com o controlador";
   - a área de mensagens do chat se ajusta dinamicamente quando a área digitável é redimensionada.
+- **Reconexão e desconexão:**
+  - Quedas involuntárias (rede, WebRTC): o controlador mostra estado *Reconectando…* e tenta restabelecer a sessão; o host reconecta ao servidor e, se ainda estiver compartilhando, renegocia o vídeo quando o controlador volta.
+  - Use **Desconectar** no controlador (ou **Parar** no host) apenas quando quiser encerrar a sessão de propósito — isso evita reconexão automática.
+  - Enquanto o host mantém o compartilhamento ativo, o controlador pode sair e voltar com o mesmo UUID dentro de ~45s sem precisar clicar de novo em *Iniciar compartilhamento* no host.
+  - Após reconectar, o host envia um reset de input e o estado do monitor ativo; aguarde o indicador de monitor antes de controlar o remoto (evita cliques fora de sincronia).
 
 ---
 
@@ -227,7 +234,10 @@ Validação recomendada antes de publicar release:
    - rolagem em baixa/média/alta;
    - clipboard opcional habilitado;
    - chat (envio com `Enter`, quebra com `Shift+Enter`, emojis e notificações em segundo plano);
-   - endpoint `GET /api/brand-icon`.
+   - endpoint `GET /api/brand-icon`;
+   - reconexão do controlador (desconectar e conectar de novo com host ainda compartilhando): um clique = um clique no host;
+   - várias reconexões seguidas na mesma aba do navegador (sem cliques/teclas duplicados);
+   - queda simulada de rede com modificador pressionado (ex.: Shift): após reconectar, tecla não deve ficar presa no host.
 
 ---
 
@@ -235,6 +245,9 @@ Validação recomendada antes de publicar release:
 
 - Não conecta entre redes diferentes: revise TURN (`METERED_*` ou `ICE_SERVERS_JSON`).
 - Só funciona na rede local: normalmente faltando TURN ou problema de NAT/firewall.
+- Conexão caiu no meio da sessão: aguarde a reconexão automática (mensagens *Reconectando…* no controlador ou no host). Só reinicie servidor/túnel se a recuperação falhar após alguns segundos ou se quiser uma sessão limpa.
+- Input estranho após reconectar (cliques/teclas a mais ou modificador preso): use **Desconectar** e conecte de novo; em último caso, **Parar** e *Iniciar compartilhamento* no host. Comportamento corrigido nas versões recentes — se persistir, reporte com passos de reprodução.
+- Controlador não entra após queda longa do host: o host pode ter parado de compartilhar ou o grace period (~45s) expirou — peça para *Iniciar compartilhamento* de novo no agent.
 - Controle não atua em tela UAC/elevada: limitação conhecida de contexto no Windows.
 - Logo/favicon não aparece no controlador: valide a existência de `agent/build/icon.png` no ambiente do servidor.
 - Falha em dependências nativas no install: instalar Build Tools C++ no Windows.

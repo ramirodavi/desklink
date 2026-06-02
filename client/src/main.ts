@@ -232,8 +232,28 @@ let annotatePenHandlersWired = false;
 let penStrokeActive = false;
 let penSegmentNorm: { x: number; y: number }[] = [];
 let currentSessionId = "";
+let remoteInputSessionEpoch = 0;
+let monitorSyncReady = false;
+let userInitiatedDisconnect = false;
+let socketReconnecting = false;
+let webrtcRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let cachedIceServers: RTCIceServer[] = [];
+let controllerSessionStarted = false;
+let waitingForHostReconnect = false;
+let hostJoinRetryTimer: ReturnType<typeof setTimeout> | null = null;
 /** ICE pode chegar antes do SDP remoto — sem fila a mídia nunca conecta */
 let pendingIce: RTCIceCandidateInit[] = [];
+
+type ControlCaptureHandlers = {
+  onContextMenu: (ev: Event) => void;
+  onPointerMove: (ev: PointerEvent) => void;
+  onPointerDown: (ev: PointerEvent) => void;
+  onPointerUp: (ev: PointerEvent) => void;
+  onWheel: (ev: WheelEvent) => void;
+  keyHandler: (ev: KeyboardEvent) => void;
+};
+
+let controlCaptureHandlers: ControlCaptureHandlers | null = null;
 let wheelAccumX = 0;
 let wheelAccumY = 0;
 let wheelPendingX = 0;
@@ -717,23 +737,90 @@ function startStatsPoller() {
   }, 1500);
 }
 
+function scheduleWebRtcRecovery() {
+  if (userInitiatedDisconnect || !socket?.connected) return;
+  if (webrtcRecoveryTimer) return;
+  webrtcRecoveryTimer = setTimeout(() => {
+    webrtcRecoveryTimer = null;
+    if (!pc || userInitiatedDisconnect || !socket?.connected) return;
+    const st = pc.connectionState;
+    const ice = pc.iceConnectionState;
+    if (st === "failed" || ice === "failed") {
+      setConnStatus("Reconectando WebRTC…");
+      void beginControllerSession(cachedIceServers).catch((e) => {
+        setConnStatus(`Falha ao reconectar WebRTC: ${String(e)}`);
+      });
+    }
+  }, 2000);
+}
+
 function wirePeerConnectionIceUi(pcRef: RTCPeerConnection) {
   const bump = () => {
     void refreshConnectionFromStats();
   };
   pcRef.onicegatheringstatechange = bump;
-  pcRef.oniceconnectionstatechange = bump;
+  pcRef.oniceconnectionstatechange = () => {
+    bump();
+    if (pcRef.iceConnectionState === "failed") {
+      scheduleWebRtcRecovery();
+    }
+  };
   pcRef.onconnectionstatechange = () => {
     bump();
     const st = pcRef.connectionState;
     if (st === "failed") {
       setConnStatus(
-        "WebRTC: falha na conexão. Verifique rede, firewall e TURN no servidor.",
+        "WebRTC: falha na conexão. Tentando reconectar…",
       );
+      scheduleWebRtcRecovery();
+    } else if (st === "connected") {
+      setConnStatus("");
     } else if (st === "disconnected") {
-      setConnStatus("WebRTC: desconectado.");
+      setConnStatus("WebRTC: desconectado. Aguardando recuperação…");
+      scheduleWebRtcRecovery();
     }
   };
+}
+
+function attachControllerWebRtcHandlers(s: Socket) {
+  s.off("signal");
+  s.off("ice-candidate");
+  s.on("signal", async (payload: { type: string; sdp?: string }) => {
+    if (!pc) return;
+    if (payload.type === "offer" && payload.sdp) {
+      await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await flushPendingIce();
+      s.emit("signal", {
+        sessionId: currentSessionId,
+        type: "answer",
+        sdp: answer.sdp ?? "",
+      });
+    }
+  });
+  s.on(
+    "ice-candidate",
+    async (payload: { candidate: RTCIceCandidateInit | null }) => {
+      if (!pc) return;
+      if (!payload.candidate?.candidate) return;
+      if (!pc.remoteDescription) {
+        pendingIce.push(payload.candidate);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(payload.candidate);
+      } catch {
+        /* ignore */
+      }
+    },
+  );
+}
+
+async function beginControllerSession(iceServers: RTCIceServer[]) {
+  if (!socket?.connected) return;
+  cleanupPeer();
+  await startControllerWebRtc(iceServers);
 }
 
 /** Base do servidor DeskLink (origem), sempre com esquema http(s) */
@@ -793,7 +880,42 @@ function disableClientClipboardSync(notifyHost: boolean) {
   clipboardSyncCheckbox.checked = false;
 }
 
+function releaseOverlayPointerCapture() {
+  if (typeof overlay.releasePointerCapture !== "function") return;
+  try {
+    for (const id of [0, 1, 2, 3, 4]) {
+      if (overlay.hasPointerCapture(id)) {
+        overlay.releasePointerCapture(id);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function teardownControlCapture() {
+  if (!controlCaptureHandlers) return;
+  const h = controlCaptureHandlers;
+  overlay.removeEventListener("contextmenu", h.onContextMenu, true);
+  overlay.removeEventListener("pointermove", h.onPointerMove);
+  overlay.removeEventListener("pointerdown", h.onPointerDown);
+  overlay.removeEventListener("pointerup", h.onPointerUp);
+  overlay.removeEventListener("wheel", h.onWheel);
+  window.removeEventListener("keydown", h.keyHandler, true);
+  window.removeEventListener("keyup", h.keyHandler, true);
+  controlCaptureHandlers = null;
+  captureKeys = false;
+  releaseOverlayPointerCapture();
+  resetWheelState();
+}
+
 function cleanupPeer() {
+  if (webrtcRecoveryTimer) {
+    clearTimeout(webrtcRecoveryTimer);
+    webrtcRecoveryTimer = null;
+  }
+  teardownControlCapture();
+  monitorSyncReady = false;
   if (penMode && controlSend?.readyState === "open") {
     try {
       const clearMsg: ControlMsg = { t: "annotate", d: "clear" };
@@ -838,6 +960,11 @@ function cleanupSocket() {
 }
 
 function disconnectAll() {
+  userInitiatedDisconnect = true;
+  socketReconnecting = false;
+  waitingForHostReconnect = false;
+  clearHostJoinRetryTimer();
+  controllerSessionStarted = false;
   cleanupPeer();
   cleanupSocket();
   captureKeys = false;
@@ -1236,8 +1363,16 @@ function handleControlMessageFromHost(raw: string) {
   } catch {
     return;
   }
+  if (msg.t === "inputReset") {
+    remoteInputSessionEpoch = msg.sessionEpoch;
+    captureKeys = false;
+    releaseOverlayPointerCapture();
+    monitorSyncReady = false;
+    return;
+  }
   if (msg.t === "monitor" && msg.d === "active") {
     updateMonitorIndicator(msg.idx, msg.total, msg.name);
+    monitorSyncReady = true;
     return;
   }
   if (msg.t === "chat") {
@@ -1316,11 +1451,13 @@ function startClientClipboardPoll() {
 }
 
 function setupControlChannel(channel: RTCDataChannel) {
+  teardownControlCapture();
   ensureAnnotatePenHandlers();
   controlSend = channel;
   applyWheelSensitivity(DEFAULT_WHEEL_SENSITIVITY);
   let lastNorm: { x: number; y: number } | null = null;
   captureKeys = false;
+  monitorSyncReady = false;
   remoteControlEnabled = remoteControlCheckbox.checked;
   if (remoteControlEnabled) overlay.classList.remove("view-only");
   else overlay.classList.add("view-only");
@@ -1354,28 +1491,26 @@ function setupControlChannel(channel: RTCDataChannel) {
     );
   }
 
-  overlay.addEventListener(
-    "contextmenu",
-    (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-    },
-    { capture: true },
-  );
+  const onContextMenu = (ev: Event) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
 
-  overlay.addEventListener("pointermove", (ev) => {
+  const onPointerMove = (ev: PointerEvent) => {
     if (penMode) return;
     if (!remoteControlEnabled) return;
+    if (!monitorSyncReady) return;
     if (!controlSend || controlSend.readyState !== "open") return;
     const n = clientToVideoNorm(ev.clientX, ev.clientY);
     if (!n) return;
     lastNorm = n;
     sendMove(n.x, n.y);
-  });
+  };
 
-  overlay.addEventListener("pointerdown", (ev) => {
+  const onPointerDown = (ev: PointerEvent) => {
     if (penMode) return;
     if (!remoteControlEnabled) return;
+    if (!monitorSyncReady) return;
     ev.preventDefault();
     captureKeys = true;
     overlay.focus();
@@ -1391,11 +1526,12 @@ function setupControlChannel(channel: RTCDataChannel) {
     sendMove(n.x, n.y);
     const msg: ControlMsg = { t: "btn", b: ev.button, down: true };
     controlSend.send(JSON.stringify(msg));
-  });
+  };
 
-  overlay.addEventListener("pointerup", (ev) => {
+  const onPointerUp = (ev: PointerEvent) => {
     if (penMode) return;
     if (!remoteControlEnabled) return;
+    if (!monitorSyncReady) return;
     ev.preventDefault();
     try {
       if (overlay.hasPointerCapture(ev.pointerId)) {
@@ -1405,35 +1541,32 @@ function setupControlChannel(channel: RTCDataChannel) {
       /* ignore */
     }
     if (!controlSend || controlSend.readyState !== "open") return;
-    const n =
-      clientToVideoNorm(ev.clientX, ev.clientY) ?? lastNorm;
+    const n = clientToVideoNorm(ev.clientX, ev.clientY) ?? lastNorm;
     if (!n) return;
     lastNorm = n;
     sendMove(n.x, n.y);
     const msg: ControlMsg = { t: "btn", b: ev.button, down: false };
     controlSend.send(JSON.stringify(msg));
-  });
+  };
 
-  overlay.addEventListener(
-    "wheel",
-    (ev) => {
-      if (penMode) return;
-      if (!remoteControlEnabled) return;
-      ev.preventDefault();
-      if (!controlSend || controlSend.readyState !== "open") return;
-      const n = clientToVideoNorm(ev.clientX, ev.clientY);
-      if (n) {
-        lastNorm = n;
-        sendMove(n.x, n.y);
-      }
-      enqueueWheelFromEvent(ev);
-    },
-    { passive: false },
-  );
+  const onWheel = (ev: WheelEvent) => {
+    if (penMode) return;
+    if (!remoteControlEnabled) return;
+    if (!monitorSyncReady) return;
+    ev.preventDefault();
+    if (!controlSend || controlSend.readyState !== "open") return;
+    const n = clientToVideoNorm(ev.clientX, ev.clientY);
+    if (n) {
+      lastNorm = n;
+      sendMove(n.x, n.y);
+    }
+    enqueueWheelFromEvent(ev);
+  };
 
   const keyHandler = (ev: KeyboardEvent) => {
     if (handleGlobalFunctionHotkeys(ev)) return;
     if (!remoteControlEnabled) return;
+    if (!monitorSyncReady) return;
     if (!captureKeys || remotePanel.classList.contains("hidden")) return;
     if (!controlSend || controlSend.readyState !== "open") return;
     ev.preventDefault();
@@ -1450,8 +1583,23 @@ function setupControlChannel(channel: RTCDataChannel) {
     };
     controlSend.send(JSON.stringify(msg));
   };
+
+  overlay.addEventListener("contextmenu", onContextMenu, true);
+  overlay.addEventListener("pointermove", onPointerMove);
+  overlay.addEventListener("pointerdown", onPointerDown);
+  overlay.addEventListener("pointerup", onPointerUp);
+  overlay.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("keydown", keyHandler, true);
   window.addEventListener("keyup", keyHandler, true);
+
+  controlCaptureHandlers = {
+    onContextMenu,
+    onPointerMove,
+    onPointerDown,
+    onPointerUp,
+    onWheel,
+    keyHandler,
+  };
 }
 
 async function startControllerWebRtc(iceServers: RTCIceServer[]) {
@@ -1498,38 +1646,7 @@ async function startControllerWebRtc(iceServers: RTCIceServer[]) {
     void setupControlChannel(ev.channel);
   };
 
-  socket.on("signal", async (payload: { type: string; sdp?: string }) => {
-    if (!pc) return;
-    if (payload.type === "offer" && payload.sdp) {
-      await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await flushPendingIce();
-      socket!.emit("signal", {
-        sessionId: currentSessionId,
-        type: "answer",
-        sdp: answer.sdp ?? "",
-      });
-    }
-  });
-
-  socket.on(
-    "ice-candidate",
-    async (payload: { candidate: RTCIceCandidateInit | null }) => {
-      if (!pc) return;
-      if (!payload.candidate?.candidate) return;
-      if (!pc.remoteDescription) {
-        pendingIce.push(payload.candidate);
-        return;
-      }
-      try {
-        await pc.addIceCandidate(payload.candidate);
-      } catch {
-        /* ignore */
-      }
-    },
-  );
-
+  attachControllerWebRtcHandlers(socket);
   socket.emit("webrtc-controller-ready", { sessionId: currentSessionId });
 
   remotePanel.classList.remove("hidden");
@@ -1543,6 +1660,133 @@ async function startControllerWebRtc(iceServers: RTCIceServer[]) {
   } catch {
     /* ignore */
   }
+}
+
+function clearHostJoinRetryTimer() {
+  if (hostJoinRetryTimer) {
+    clearTimeout(hostJoinRetryTimer);
+    hostJoinRetryTimer = null;
+  }
+}
+
+function scheduleHostJoinRetry(
+  s: Socket,
+  sessionId: string,
+  iceServers: RTCIceServer[],
+) {
+  clearHostJoinRetryTimer();
+  hostJoinRetryTimer = setTimeout(() => {
+    hostJoinRetryTimer = null;
+    if (userInitiatedDisconnect || !waitingForHostReconnect || !s.connected) {
+      return;
+    }
+    attemptControllerJoin(s, sessionId, iceServers);
+  }, 2000);
+}
+
+function attemptControllerJoin(
+  s: Socket,
+  sessionId: string,
+  iceServers: RTCIceServer[],
+) {
+  s.emit(
+    "join",
+    { sessionId, role: "controller" },
+    (err: string | null) => {
+      if (err) {
+        if (
+          waitingForHostReconnect &&
+          (err.includes("Nenhum host") ||
+            err.includes("ainda não iniciou o compartilhamento"))
+        ) {
+          setStatus("Aguardando host reconectar…", "err");
+          setConnStatus("Aguardando host…");
+          scheduleHostJoinRetry(s, sessionId, iceServers);
+          return;
+        }
+        setStatus(err, "err");
+        if (!socketReconnecting && !waitingForHostReconnect) {
+          btnConnect.disabled = false;
+        }
+        return;
+      }
+      waitingForHostReconnect = false;
+      clearHostJoinRetryTimer();
+      socketReconnecting = false;
+      controllerSessionStarted = true;
+      btnConnect.disabled = true;
+      btnDisconnect.disabled = false;
+      remotePanel.classList.remove("hidden");
+      setStatus("Sessão aceita. Preparando WebRTC…", "ok");
+      void beginControllerSession(iceServers).catch((e) => {
+        setStatus(`WebRTC: ${String(e)}`, "err");
+        if (!userInitiatedDisconnect) btnConnect.disabled = false;
+      });
+    },
+  );
+}
+
+function wireControllerSocket(s: Socket, sessionId: string, iceServers: RTCIceServer[]) {
+  s.on("connect_error", (err) => {
+    if (!userInitiatedDisconnect) {
+      setStatus(`Socket: ${err.message} (tentando de novo…)`, "err");
+      return;
+    }
+    setStatus(`Socket: ${err.message}`, "err");
+    btnConnect.disabled = false;
+  });
+
+  s.on("disconnect", (reason) => {
+    if (userInitiatedDisconnect) {
+      setStatus(`Desconectado: ${reason}`, "err");
+      disconnectAll();
+      return;
+    }
+    socketReconnecting = true;
+    cleanupPeer();
+    setStatus(`Conexão perdida (${reason}). Reconectando…`, "err");
+    setConnStatus("Reconectando socket…");
+  });
+
+  s.on("peer-left", ({ role }: { role: string }) => {
+    if (userInitiatedDisconnect) return;
+    if (role === "host") {
+      waitingForHostReconnect = true;
+      cleanupPeer();
+      btnDisconnect.disabled = false;
+      remotePanel.classList.remove("hidden");
+      setStatus("Host reconectando… aguardando retorno.", "err");
+      setConnStatus("Aguardando host…");
+      if (s.connected) {
+        scheduleHostJoinRetry(s, sessionId, iceServers);
+      }
+      return;
+    }
+    setStatus("Controlador desconectou da sala; aguardando host…", "err");
+    cleanupPeer();
+  });
+
+  s.on(
+    "host-rejoined",
+    (payload: { sessionId: string; sessionEpoch?: number }) => {
+      if (payload.sessionId !== currentSessionId) return;
+      waitingForHostReconnect = false;
+      clearHostJoinRetryTimer();
+      setStatus("Host voltou. Restabelecendo WebRTC…", "ok");
+      void beginControllerSession(iceServers).catch((e) => {
+        setStatus(`WebRTC: ${String(e)}`, "err");
+      });
+    },
+  );
+
+  s.on("connect", () => {
+    setStatus(
+      socketReconnecting || waitingForHostReconnect
+        ? "Socket reconectado. Entrando na sessão…"
+        : "Socket conectado. Entrando na sessão…",
+    );
+    attemptControllerJoin(s, sessionId, iceServers);
+  });
 }
 
 btnConnect.addEventListener("click", async () => {
@@ -1560,6 +1804,11 @@ btnConnect.addEventListener("click", async () => {
     return;
   }
 
+  userInitiatedDisconnect = false;
+  socketReconnecting = false;
+  waitingForHostReconnect = false;
+  clearHostJoinRetryTimer();
+  controllerSessionStarted = false;
   btnConnect.disabled = true;
   setStatus("Conectando ao servidor…");
 
@@ -1572,46 +1821,18 @@ btnConnect.addEventListener("click", async () => {
     return;
   }
 
+  cachedIceServers = iceServers;
   cleanupSocket();
   currentSessionId = sessionId;
 
   socket = io(base, {
     path: "/socket.io",
     transports: ["websocket", "polling"],
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 8000,
   });
 
-  socket.on("connect_error", (err) => {
-    setStatus(`Socket: ${err.message}`, "err");
-    btnConnect.disabled = false;
-  });
-
-  socket.on("disconnect", (reason) => {
-    setStatus(`Desconectado: ${reason}`, "err");
-    disconnectAll();
-  });
-
-  socket.on("peer-left", ({ role }: { role: string }) => {
-    setStatus(`Par saiu (${role}).`, "err");
-    disconnectAll();
-  });
-
-  socket.on("connect", () => {
-    setStatus("Socket conectado. Entrando na sessão…");
-    socket!.emit(
-      "join",
-      { sessionId, role: "controller" },
-      (err: string | null) => {
-        if (err) {
-          setStatus(err, "err");
-          btnConnect.disabled = false;
-          return;
-        }
-        setStatus("Sessão aceita. Preparando WebRTC…", "ok");
-        void startControllerWebRtc(iceServers).catch((e) => {
-          setStatus(`WebRTC: ${String(e)}`, "err");
-          btnConnect.disabled = false;
-        });
-      },
-    );
-  });
+  wireControllerSocket(socket, sessionId, iceServers);
 });

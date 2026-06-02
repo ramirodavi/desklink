@@ -12,6 +12,8 @@ dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), ".
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN ?? "*";
+const CONTROLLER_GRACE_MS = 45_000;
+const HOST_GRACE_MS = 45_000;
 
 const app = express();
 app.use(cors({ origin: CLIENT_ORIGIN === "*" ? true : CLIENT_ORIGIN }));
@@ -72,6 +74,11 @@ interface RoomState {
   controllerWebRtcReady?: boolean;
   /** Host já clicou em “Iniciar compartilhamento” (webrtc-host-ready). */
   hostSharingStarted?: boolean;
+  sessionEpoch: number;
+  controllerGraceTimer?: ReturnType<typeof setTimeout>;
+  controllerGracePending?: boolean;
+  hostGraceTimer?: ReturnType<typeof setTimeout>;
+  hostGracePending?: boolean;
 }
 
 const rooms = new Map<string, RoomState>();
@@ -83,27 +90,118 @@ function roomKey(sessionId: string) {
 function getOrCreateRoom(sessionId: string): RoomState {
   let r = rooms.get(sessionId);
   if (!r) {
-    r = { sessionId };
+    r = { sessionId, sessionEpoch: 0 };
     rooms.set(sessionId, r);
   }
   return r;
 }
 
+function clearControllerGrace(state: RoomState) {
+  if (state.controllerGraceTimer) {
+    clearTimeout(state.controllerGraceTimer);
+    state.controllerGraceTimer = undefined;
+  }
+  state.controllerGracePending = false;
+}
+
+function emitControllerPeerLeft(sessionId: string) {
+  io.to(roomKey(sessionId)).emit("peer-left", { role: "controller" });
+}
+
+function finalizeControllerLeave(sessionId: string, state: RoomState) {
+  clearControllerGrace(state);
+  state.controller = undefined;
+  state.controllerWebRtcReady = false;
+  emitControllerPeerLeft(sessionId);
+}
+
+function clearHostGrace(state: RoomState) {
+  if (state.hostGraceTimer) {
+    clearTimeout(state.hostGraceTimer);
+    state.hostGraceTimer = undefined;
+  }
+  state.hostGracePending = false;
+}
+
+function emitHostPeerLeft(sessionId: string) {
+  io.to(roomKey(sessionId)).emit("peer-left", { role: "host" });
+}
+
+function scheduleHostGraceLeave(sessionId: string, state: RoomState) {
+  clearHostGrace(state);
+  state.host = undefined;
+  state.hostWebRtcReady = false;
+
+  if (!state.hostSharingStarted) {
+    emitHostPeerLeft(sessionId);
+    return;
+  }
+
+  state.hostGracePending = true;
+  state.hostGraceTimer = setTimeout(() => {
+    state.hostGraceTimer = undefined;
+    state.hostGracePending = false;
+    const current = rooms.get(sessionId);
+    if (!current) return;
+    current.hostSharingStarted = false;
+    emitHostPeerLeft(sessionId);
+  }, HOST_GRACE_MS);
+}
+
+function roomIsEmpty(state: RoomState): boolean {
+  return (
+    !state.host &&
+    !state.controller &&
+    !state.controllerGracePending &&
+    !state.hostGracePending
+  );
+}
+
+function isSocketConnected(socketId: string): boolean {
+  const s = io.sockets.sockets.get(socketId);
+  return Boolean(s?.connected);
+}
+
+function scheduleControllerGraceLeave(sessionId: string, state: RoomState) {
+  clearControllerGrace(state);
+  state.controller = undefined;
+  state.controllerWebRtcReady = false;
+
+  if (!state.hostSharingStarted || !state.host) {
+    emitControllerPeerLeft(sessionId);
+    return;
+  }
+
+  state.controllerGracePending = true;
+  state.controllerGraceTimer = setTimeout(() => {
+    state.controllerGraceTimer = undefined;
+    state.controllerGracePending = false;
+    const current = rooms.get(sessionId);
+    if (!current) return;
+    emitControllerPeerLeft(sessionId);
+  }, CONTROLLER_GRACE_MS);
+}
+
 function leaveRoom(socketId: string) {
   for (const [sid, state] of rooms) {
     if (state.host?.socketId === socketId) {
-      state.host = undefined;
-      state.hostWebRtcReady = false;
-      state.hostSharingStarted = false;
-      io.to(roomKey(sid)).emit("peer-left", { role: "host" });
+      clearControllerGrace(state);
+      scheduleHostGraceLeave(sid, state);
     }
     if (state.controller?.socketId === socketId) {
-      state.controller = undefined;
-      state.controllerWebRtcReady = false;
-      io.to(roomKey(sid)).emit("peer-left", { role: "controller" });
+      scheduleControllerGraceLeave(sid, state);
     }
-    if (!state.host && !state.controller) rooms.delete(sid);
+    if (roomIsEmpty(state)) {
+      rooms.delete(sid);
+    }
   }
+}
+
+function bumpSessionEpoch(sessionId: string): number {
+  const state = rooms.get(sessionId);
+  if (!state) return 0;
+  state.sessionEpoch += 1;
+  return state.sessionEpoch;
 }
 
 function tryEmitBothReady(sessionId: string) {
@@ -118,10 +216,14 @@ io.on("connection", (socket) => {
   socket.on(
     "join",
     (
-      payload: { sessionId: string; role: Role },
+      payload: {
+        sessionId: string;
+        role: Role;
+        wasSharing?: boolean;
+      },
       ack?: (err: string | null) => void,
     ) => {
-      const { sessionId, role } = payload;
+      const { sessionId, role, wasSharing } = payload;
       if (!sessionId || !role) {
         ack?.("sessionId e role são obrigatórios");
         return;
@@ -129,14 +231,43 @@ io.on("connection", (socket) => {
       const state = getOrCreateRoom(sessionId);
       if (role === "host") {
         if (state.host && state.host.socketId !== socket.id) {
-          ack?.("Já existe um host nesta sessão");
-          return;
+          if (isSocketConnected(state.host.socketId)) {
+            ack?.("Já existe um host nesta sessão");
+            return;
+          }
         }
+        const hadHostGrace = Boolean(
+          state.hostGracePending || state.hostGraceTimer,
+        );
+        clearHostGrace(state);
         state.host = { socketId: socket.id, role: "host" };
         state.hostWebRtcReady = false;
-        state.hostSharingStarted = false;
+        if (wasSharing) {
+          state.hostSharingStarted = true;
+        } else if (!state.hostSharingStarted) {
+          state.hostSharingStarted = false;
+        }
+        if (hadHostGrace && state.controller) {
+          io.to(state.controller.socketId).emit("host-rejoined", {
+            sessionId,
+            sessionEpoch: state.sessionEpoch,
+          });
+        }
       } else {
         if (!state.host) {
+          if (state.hostGracePending && state.hostSharingStarted) {
+            if (state.controller && state.controller.socketId !== socket.id) {
+              if (isSocketConnected(state.controller.socketId)) {
+                ack?.("Já existe um controlador nesta sessão");
+                return;
+              }
+            }
+            state.controller = { socketId: socket.id, role: "controller" };
+            state.controllerWebRtcReady = false;
+            void socket.join(roomKey(sessionId));
+            ack?.(null);
+            return;
+          }
           ack?.(
             "Nenhum host nesta sessão com este código. Confira o UUID ou aguarde o DeskLink no PC remoto.",
           );
@@ -148,12 +279,24 @@ io.on("connection", (socket) => {
           );
           return;
         }
+        const hadGrace = Boolean(
+          state.controllerGracePending || state.controllerGraceTimer,
+        );
+        clearControllerGrace(state);
         if (state.controller && state.controller.socketId !== socket.id) {
-          ack?.("Já existe um controlador nesta sessão");
-          return;
+          if (isSocketConnected(state.controller.socketId)) {
+            ack?.("Já existe um controlador nesta sessão");
+            return;
+          }
         }
         state.controller = { socketId: socket.id, role: "controller" };
         state.controllerWebRtcReady = false;
+        if (hadGrace && state.host) {
+          io.to(state.host.socketId).emit("controller-rejoined", {
+            sessionId,
+            sessionEpoch: state.sessionEpoch,
+          });
+        }
       }
       void socket.join(roomKey(sessionId));
       ack?.(null);
@@ -164,6 +307,7 @@ io.on("connection", (socket) => {
     const { sessionId } = payload;
     const state = rooms.get(sessionId);
     if (!state?.host || state.host.socketId !== socket.id) return;
+    bumpSessionEpoch(sessionId);
     state.hostWebRtcReady = true;
     state.hostSharingStarted = true;
     tryEmitBothReady(sessionId);
@@ -181,6 +325,8 @@ io.on("connection", (socket) => {
     const { sessionId } = payload;
     const state = rooms.get(sessionId);
     if (!state?.host || state.host.socketId !== socket.id) return;
+    clearControllerGrace(state);
+    clearHostGrace(state);
     state.hostWebRtcReady = false;
     state.hostSharingStarted = false;
   });

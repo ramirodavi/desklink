@@ -7,6 +7,8 @@ import { codeToKey } from "./keymap.js";
 let inited = false;
 let activeDisplayBounds: { x: number; y: number; width: number; height: number } | null =
   null;
+const pressedButtons = new Set<Button>();
+const pressedKeys = new Set<Key>();
 const MAX_WHEEL_STEPS = 8;
 const WHEEL_DELTA = 120;
 let nativeWheelHelper: ReturnType<typeof spawn> | null = null;
@@ -117,6 +119,29 @@ function clampWheelSteps(v: number): number {
   return Math.sign(n) * Math.min(MAX_WHEEL_STEPS, Math.abs(n));
 }
 
+/** Libera botões/teclas que ficaram pressionados após queda da sessão remota. */
+export async function releaseAllRemoteInput(): Promise<void> {
+  ensureInit();
+  const buttons = [...pressedButtons];
+  const keys = [...pressedKeys];
+  pressedButtons.clear();
+  pressedKeys.clear();
+  for (const b of buttons) {
+    try {
+      await mouse.releaseButton(b);
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const k of keys) {
+    try {
+      await keyboard.releaseKey(k);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function applyWheel(vx: number, vy: number): Promise<void> {
   const sx = clampWheelSteps(vx);
   const sy = clampWheelSteps(vy);
@@ -153,8 +178,13 @@ export async function applyControlJson(json: string): Promise<void> {
     }
     case "btn": {
       const b = btnToButton(msg.b);
-      if (msg.down) await mouse.pressButton(b);
-      else await mouse.releaseButton(b);
+      if (msg.down) {
+        pressedButtons.add(b);
+        await mouse.pressButton(b);
+      } else {
+        pressedButtons.delete(b);
+        await mouse.releaseButton(b);
+      }
       break;
     }
     case "dblclick": {
@@ -193,8 +223,15 @@ export async function applyControlJson(json: string): Promise<void> {
       const k = codeToKey(msg.code);
       if (k === undefined) return;
       const mods = modifierKeys(msg);
-      if (msg.down) await keyboard.pressKey(...mods, k);
-      else await keyboard.releaseKey(...mods, k);
+      if (msg.down) {
+        for (const m of mods) pressedKeys.add(m);
+        pressedKeys.add(k);
+        await keyboard.pressKey(...mods, k);
+      } else {
+        for (const m of mods) pressedKeys.delete(m);
+        pressedKeys.delete(k);
+        await keyboard.releaseKey(...mods, k);
+      }
       break;
     }
     case "monitor": {
@@ -205,7 +242,8 @@ export async function applyControlJson(json: string): Promise<void> {
     }
     case "annotate":
     case "streamProfile":
-    case "streamProfileAck": {
+    case "streamProfileAck":
+    case "inputReset": {
       break;
     }
     default:

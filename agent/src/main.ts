@@ -435,9 +435,18 @@ ipcMain.handle("desktop-sources", async () => {
   });
 });
 
+let applyControlChain: Promise<void> = Promise.resolve();
+
 ipcMain.handle("apply-control", async (_e, json: string) => {
   const mod = await loadControlModule();
-  await mod.applyControlJson(json);
+  const run = applyControlChain.then(() => mod.applyControlJson(json));
+  applyControlChain = run.catch(() => {});
+  await run;
+});
+
+ipcMain.handle("desklink-release-all-input", async () => {
+  const mod = await loadControlModule();
+  await mod.releaseAllRemoteInput();
 });
 
 function isDisplayBounds(
