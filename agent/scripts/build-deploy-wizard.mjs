@@ -3,16 +3,34 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const payloadDir = join(agentRoot, "installer", "payload");
-const installerScript = join(agentRoot, "installer", "DeskLinkDeployWizard.iss");
-const publishDir = join(agentRoot, "installer", "publish");
-const wizardExe = join(publishDir, "DeskLinkDeployWizard.exe");
+const agentRoot        = join(dirname(fileURLToPath(import.meta.url)), "..");
+const payloadCommonDir = join(agentRoot, "installer", "payload-common");
+const payloadHostDir   = join(agentRoot, "installer", "payload");
+const payloadServerDir = join(agentRoot, "installer", "payload-server");
+const installerScript  = join(agentRoot, "installer", "DeskLinkDeployWizard.iss");
+const publishDir       = join(agentRoot, "installer", "publish");
+const wizardExe        = join(publishDir, "DeskLinkDeployWizard.exe");
 
-if (!existsSync(payloadDir)) {
+if (!existsSync(payloadCommonDir)) {
   console.error(
-    `[build-deploy-wizard] Payload não encontrado: ${payloadDir}\n` +
-      "Execute `npm run prepare:wizard-payload -w agent` antes de compilar o wizard.",
+    "[build-deploy-wizard] Payload comum não encontrado:", payloadCommonDir,
+    "\nExecute `npm run prepare:wizard-payload -w agent` antes.",
+  );
+  process.exit(1);
+}
+
+if (!existsSync(payloadHostDir)) {
+  console.error(
+    "[build-deploy-wizard] Payload do Host não encontrado:", payloadHostDir,
+    "\nExecute `npm run prepare:wizard-payload -w agent` antes.",
+  );
+  process.exit(1);
+}
+
+if (!existsSync(payloadServerDir)) {
+  console.error(
+    "[build-deploy-wizard] Payload do Servidor não encontrado:", payloadServerDir,
+    "\nExecute `npm run prepare:wizard-payload -w agent-server` antes.",
   );
   process.exit(1);
 }
@@ -35,8 +53,6 @@ console.log("[build-deploy-wizard] ISCC:", iscc);
 const r = spawnSync(iscc, [installerScript], {
   cwd: join(agentRoot, "installer"),
   stdio: "inherit",
-  // Importante: não usar `shell:true`, pois o caminho do ISCC tem espaços
-  // (ex: "C:\\Program Files (x86)\\...") e o shell pode quebrar o comando.
   shell: false,
   env: process.env,
 });

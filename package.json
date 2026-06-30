@@ -4,7 +4,8 @@
   "workspaces": [
     "server",
     "client",
-    "agent"
+    "agent",
+    "agent-server"
   ],
   "scripts": {
     "dev:server": "npm run dev -w server",

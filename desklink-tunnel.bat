@@ -3,11 +3,14 @@ chcp 65001 >nul
 title DeskLink - Tunel Cloudflare (gratis)
 cd /d "%~dp0"
 
-echo ============================================================
-echo  Antes: deixe o servidor DeskLink RODANDO na porta 3000
-echo  (abra outra janela e execute desklink-server.bat)
-echo ============================================================
-echo.
+netstat -an | findstr ":3000" | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 (
+  echo ============================================================
+  echo  Antes: deixe o servidor DeskLink RODANDO na porta 3000
+  echo  ^(execute desklink-server.bat ou use desklink-externo.bat^)
+  echo ============================================================
+  echo.
+)
 
 set "CF="
 where cloudflared >nul 2>&1

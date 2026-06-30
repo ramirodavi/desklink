@@ -1,0 +1,40 @@
+appId: com.desklink.server
+productName: DeskLinkServer
+copyright: Copyright © DeskLink
+electronVersion: 31.7.7
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  # Ícones da janela em runtime (nativeImage)
+  - build/icon.ico
+  - build/icon.png
+
+extraResources:
+  # client/dist empacotado para ser servido pelo Express interno
+  - from: ../client/dist
+    to: client-dist
+  # Ícone de marca servido em /api/brand-icon
+  - from: ../agent/build/icon.png
+    to: brand-icon.png
+  # cloudflared.exe — baixar de https://github.com/cloudflare/cloudflared/releases
+  # e colocar em agent-server/resources/cloudflared.exe antes do build.
+  # Se o arquivo não existir, o build continua e o app tentará o PATH do sistema.
+  - from: resources
+    to: .
+    filter:
+      - cloudflared.exe
+
+npmRebuild: false
+
+win:
+  icon: build/icon.ico
+  executableName: DeskLinkServer
+  target:
+    - dir
+  artifactName: "DeskLinkServer.${ext}"
+  signAndEditExecutable: false

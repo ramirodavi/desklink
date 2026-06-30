@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>DeskLink Server</title>
+    <link rel="icon" href="./icon.png" type="image/png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+
+      <!-- Cabeçalho -->
+      <div class="brand">
+        <div class="brand-icon">
+          <img id="brand-img" src="icon.png" alt="DeskLink" onerror="this.style.display='none'" />
+        </div>
+        <div class="brand-text">
+          <h1>DeskLink Server</h1>
+          <p>Sinalização WebRTC + túnel Cloudflare</p>
+        </div>
+      </div>
+
+      <!-- Card de Status -->
+      <div class="card">
+        <div class="card-title">Status</div>
+        <div class="status-row">
+          <span class="status-dot" id="server-dot" data-state="waiting"></span>
+          <span class="status-label">Servidor</span>
+          <span class="status-value" id="server-status-text">Iniciando...</span>
+        </div>
+        <div class="status-row">
+          <span class="status-dot" id="tunnel-dot" data-state="waiting"></span>
+          <span class="status-label">Túnel</span>
+          <span class="status-value" id="tunnel-status-text">Aguardando servidor...</span>
+        </div>
+      </div>
+
+      <!-- Card do URL do túnel (oculto até estar pronto) -->
+      <div class="card hidden" id="url-card">
+        <div class="card-title">URL do túnel</div>
+        <div class="url-box">
+          <span class="url-text" id="tunnel-url-text"></span>
+          <button class="icon-btn" id="copy-btn" title="Copiar URL">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+        </div>
+        <p class="hint" id="copy-hint" aria-live="polite"></p>
+        <div class="actions">
+          <button class="primary" id="open-browser-btn">Abrir no navegador</button>
+          <button class="secondary" id="restart-tunnel-btn">Reiniciar túnel</button>
+        </div>
+      </div>
+
+      <!-- Card de Logs -->
+      <div class="card log-card">
+        <div class="card-title">Logs</div>
+        <pre class="log-area" id="log-area" aria-label="Logs do servidor"></pre>
+      </div>
+
+      <!-- Rodapé -->
+      <div class="footer-actions">
+        <button class="danger" id="stop-btn">Encerrar servidor</button>
+      </div>
+
+    </div>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

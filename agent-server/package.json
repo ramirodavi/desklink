@@ -1,0 +1,30 @@
+{
+  "name": "@desklink/agent-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DeskLink Server — gerenciador do servidor de sinalização e túnel Cloudflare",
+  "author": "DeskLink",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:main": "esbuild src/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/main.js",
+    "build:preload": "esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.cjs",
+    "build:renderer": "esbuild src/renderer/index.ts --bundle --outfile=dist/renderer/index.js --platform=browser --format=esm",
+    "build": "npm run build:main && npm run build:preload && npm run build:renderer && node scripts/copy-html.mjs",
+    "build-icon": "node scripts/build-icon.mjs",
+    "generate-icon-source": "node scripts/generate-icon-source.mjs",
+    "build:host-bundle": "npm run build && npm run build-icon && electron-builder --win dir --x64 && node scripts/patch-server-icon.mjs",
+    "prepare:wizard-payload": "node scripts/prepare-wizard-payload-server.mjs",
+    "pack:agent": "npm run build:host-bundle && npm run prepare:wizard-payload",
+    "dev": "npm run build && electron ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "electron": "31.7.7",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2",
+    "rcedit": "^5.0.2",
+    "sharp": "^0.34.5",
+    "to-ico": "^1.1.5",
+    "typescript": "^5.7.2"
+  }
+}

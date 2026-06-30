@@ -16,6 +16,7 @@
     "build:host-bundle": "npm run build && npm run build-icon && electron-builder --win dir --x64 && node scripts/patch-host-icon.mjs",
     "prepare:wizard-payload": "node scripts/prepare-wizard-payload.mjs",
     "build:deploy-wizard": "node scripts/build-deploy-wizard.mjs",
+    "pack:agent": "npm run build:host-bundle && npm run prepare:wizard-payload",
     "pack:wizard": "npm run build:host-bundle && npm run prepare:wizard-payload && npm run build:deploy-wizard",
     "dev": "npm run build && electron .",
     "pack": "npm run build && npm run build-icon && electron-builder --win portable --x64"

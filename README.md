@@ -1,11 +1,11 @@
 # DeskLink
 
-DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela (host) e outro PC controla pelo navegador (controlador). Vídeo e comandos trafegam por WebRTC; o servidor Node faz a sinalização da sessão e fornece configuração ICE.
+DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela (**host**) e outro PC controla pelo navegador (**controlador**). Vídeo e comandos trafegam por WebRTC; o servidor Node faz a sinalização da sessão e fornece configuração ICE.
 
 ## 📌 Status do projeto
 
 - Estágio atual: protótipo funcional com foco em uso pessoal e evolução incremental.
-- Plataformas: host em Windows x64 (Electron) e controlador em navegador moderno.
+- Plataformas: host e servidor em Windows x64 (Electron) e controlador em navegador moderno.
 - Escopo atual: 1 host + 1 controlador por sessão.
 
 ## ✨ Recursos principais
@@ -24,6 +24,7 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
   - host (Windows): notificação nativa + piscar na barra quando a janela está sem foco/minimizada.
 - **Reconexão automática:** quedas involuntárias de rede ou WebRTC disparam nova tentativa (Socket.io + renegociação WebRTC) sem exigir reinício do servidor ou do túnel.
 - **Retorno do controlador:** se o host ainda estiver compartilhando, a sessão WebRTC é restabelecida automaticamente quando o controlador volta com o mesmo código (grace period de ~45s no servidor).
+- **DeskLink Server:** app Electron com interface visual para iniciar o servidor de sinalização e o túnel Cloudflare, exibir a URL gerada e abri-la automaticamente no navegador padrão.
 
 ---
 
@@ -34,6 +35,7 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 | `server/` | Sinalização entre peers, API e arquivos estáticos do controlador em produção | Node.js, Express, Socket.io |
 | `client/` | Aplicação web do controlador (vídeo remoto + envio de comandos) | Vite, TypeScript, socket.io-client, WebRTC |
 | `agent/` | Aplicativo host desktop (captura de tela + injeção de input no SO) | Electron, TypeScript, nut-js |
+| `agent-server/` | Aplicativo servidor desktop (gerencia servidor de sinalização + túnel Cloudflare) | Electron, TypeScript, esbuild |
 
 Fluxo simplificado:
 
@@ -61,7 +63,8 @@ Observação: o tráfego de mídia não passa pelo processo Node do DeskLink; pa
 - Backend: Express + Socket.io.
 - Frontend controlador: Vite + TypeScript.
 - App host: Electron + TypeScript + esbuild.
-- Automação de build do host: electron-builder.
+- App servidor: Electron + TypeScript + esbuild.
+- Automação de build: electron-builder.
 - Input nativo no host: `@nut-tree-fork/nut-js`.
 
 ---
@@ -71,7 +74,7 @@ Observação: o tráfego de mídia não passa pelo processo Node do DeskLink; pa
 | Item | Detalhe |
 |------|---------|
 | Node.js | 18+ ([nodejs.org](https://nodejs.org)) |
-| Sistema para host | Windows x64 |
+| Sistema para host/servidor | Windows x64 |
 | Dependências nativas (opcional) | [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) podem ser necessários caso o `electron-rebuild` precise compilar a partir do código-fonte (caso não haja binários pré-compilados). |
 | Wizard/Installer | [Inno Setup 6](https://jrsoftware.org/isdl.php) instalado (precisa do `ISCC.exe`). Se o `ISCC.exe` não estiver em `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`, defina `ISCC_PATH` antes do build. |
 
@@ -97,6 +100,14 @@ npm run dev
 npm run dev -w agent
 ```
 
+🔹 Terminal 3 (opcional — app servidor Electron):
+
+```bash
+npm run dev -w agent-server
+```
+
+> O app **DeskLink Server** embute o servidor Node e o controlador web; em dev, ainda é comum usar `npm run dev` + `desklink-externo.bat` para expor o túnel.
+
 📍 Endpoints em dev:
 
 - API/Socket.io: `http://localhost:3000`
@@ -115,7 +126,7 @@ npm run dev -w agent
 - Clique na área remota para capturar mouse/teclado no controlador.
 - "Habilitar controle remoto" desmarca para modo somente visualização.
 - `F8` (ou botão de monitor) alterna monitor remoto ativo quando houver múltiplos displays.
-- Atalhos no **controlador** (sem Ctrl/Alt/Shift/Meta, com o painel remoto visível): `F6` alterna sincronização de clipboard; `F7` alterna “Habilitar controle remoto”; `F8` solicita troca de monitor no host; `F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `F10` foca a área remota na página; `F11` alterna **tela cheia** da área remota. **Nota:** em alguns navegadores `F11` é capturada para tela cheia global da aba; use o botão **Tela cheia** se o atalho não responder. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
+- Atalhos no **controlador** (sem Ctrl/Alt/Shift/Meta, com o painel remoto visível): `F6` alterna sincronização de clipboard; `F7` alterna "Habilitar controle remoto"; `F8` solicita troca de monitor no host; `F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `F10` foca a área remota na página; `F11` alterna **tela cheia** da área remota. **Nota:** em alguns navegadores `F11` é capturada para tela cheia global da aba; use o botão **Tela cheia** se o atalho não responder. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
 - A rolagem usa normalização e coalescência para reduzir picos de eventos.
 - O seletor de sensibilidade de rolagem aplica sem reconectar (baixa/média/alta).
 - **Conexão e rede (só no controlador):** acima dos atalhos aparecem pills com o estado **ICE** (negociação WebRTC), o **caminho** estimado (rede local, NAT na internet ou **relay via TURN**) e uma linha de **métricas** (RTT aproximado, fps recebido, perda de pacotes e qualidade *Boa / Instável / Ruim*). Passe o mouse para ver dicas em português. Se a conexão falhar com frequência entre redes diferentes, confira TURN no servidor (`METERED_*` ou `ICE_SERVERS_JSON`).
@@ -198,24 +209,62 @@ $env:ICE_SERVERS_JSON='[{"urls":["turn:turn.example.com:3478"],"username":"u","c
 | Arquivo | Função |
 |---------|--------|
 | `desklink-server.bat` | Instala dependências se necessário, compila client/server quando faltar `dist` e inicia servidor |
-| `desklink-build-agent.bat` | Build completo e geração do wizard de expedição em `agent/installer/publish/` |
-| `desklink-tunnel.bat` | Túnel Cloudflare para expor `localhost:3000` |
+| `desklink-externo.bat` | Inicia servidor + túnel Cloudflare em conjunto (conveniente para desenvolvimento) |
+| `desklink-tunnel.bat` | Inicia somente o túnel Cloudflare para expor `localhost:3000` |
+| `desklink-build-agent.bat` | Build completo (host + servidor Electron) e geração do wizard unificado em `agent/installer/publish/` |
 
-### 🧱 Build/release do Agent (pontos importantes)
+### 🧱 Build/release (pontos importantes)
 
-- `npm run pack -w agent` roda `build-icon` antes do `electron-builder`.
-- `build-icon` gera `agent/build/icon.ico` a partir de `agent/build/icon.png`.
-- O `desklink-build-agent.bat` prepara o ícone atual do agent e executa o empacotamento do wizard.
-- O controlador usa `GET /api/brand-icon`, servido de `agent/build/icon.png`; em deploy/CI, garanta esse arquivo no host do servidor.
+- `desklink-build-agent.bat` executa as seguintes etapas em sequência:
+  1. `npm install`
+  2. Build do `client/`
+  3. Build do `server/`
+  4. Geração do ícone do host (`agent/build/icon.ico`)
+  5. Empacotamento do host Electron (`DeskLinkHost.exe`)
+  6. Geração do ícone do servidor (`agent-server/build/icon.ico`)
+  7. Empacotamento do servidor Electron (`DeskLinkServer.exe`)
+  8. Compilação do wizard unificado via Inno Setup
+- O controlador usa `GET /api/brand-icon`, servido de `agent/build/icon.png`; em deploy/CI, garanta esse arquivo no host do servidor. No **DeskLink Server** empacotado, esse mesmo arquivo é incluído como `brand-icon.png` para o controlador web servido pelo app.
+- O **DeskLink Server** usa ícone próprio em `agent-server/build/icon.png` (versionado no repo, como o Host). Edite o PNG e rode `npm run build-icon -w agent-server` para regenerar o `.ico`. Para recriar o PNG a partir do Host: `npm run generate-icon-source -w agent-server`. O atalho usa o ícone embutido em `DeskLinkServer.exe` (após `patch-server-icon.mjs`).
 
-### 🚚 Wizard de expedição sem admin
+### 🚚 Wizard de expedição unificado
 
-- `npm run build:host-bundle -w agent`: gera o bundle desempacotado do host em `agent/release/win-unpacked/`.
-- `npm run prepare:wizard-payload -w agent`: copia o bundle desempacotado para `agent/installer/payload/` (pra não extrair em runtime).
+O instalador `DeskLinkDeployWizard.exe` pede ao usuário qual papel instalar:
+
+- **Host:** instala `DeskLinkHost.exe` — o app Electron para compartilhar a tela. O código de sessão gerado é enviado ao controlador remoto.
+- **Servidor:** instala `DeskLinkServer.exe` — o app Electron com interface visual que:
+  - inicia o servidor de sinalização embutido (porta 3000);
+  - estabelece automaticamente um túnel Cloudflare (`cloudflared`);
+  - exibe a URL pública gerada (copiável com um clique);
+  - abre o controlador web no navegador padrão.
+
+> **Nota sobre `cloudflared`:** para usar o túnel no `DeskLinkServer.exe` fora do instalador (em desenvolvimento), coloque `cloudflared.exe` em `agent-server/resources/`. No instalador final, o executável pode ser incluído em `agent/installer/payload-server/resources/`.
+
+**Payloads do wizard (estrutura otimizada):**
+
+O installer usa três diretórios de payload gerados automaticamente pelo build (em `agent/installer/`):
+
+| Diretório | Conteúdo | Condição |
+|-----------|----------|----------|
+| `agent/installer/payload-common/` | Runtime Electron (DLLs, pak files, locales, ~170 MB) | Sempre instalado |
+| `agent/installer/payload/` | `DeskLinkHost.exe`, `icon.ico`, `resources/` do Host | Só quando Host selecionado |
+| `agent/installer/payload-server/` | `DeskLinkServer.exe`, `icon.ico`, `resources/` do Servidor | Só quando Servidor selecionado |
+
+O runtime Electron é **idêntico entre Host e Server** (~170 MB) e empacotado **uma única vez**, reduzindo o tamanho do `DeskLinkDeployWizard.exe` em relação à duplicação anterior.
+
+Diretórios padrão sugeridos pelo wizard: `%LocalAppData%\DeskLinkHost` e `%LocalAppData%\DeskLinkServer`.
+
+Scripts individuais de build/payload:
+
+- `npm run pack:agent -w agent`: pipeline completo do host (ícone + electron-builder + `payload-common/` + `payload/`).
+- `npm run pack:agent -w agent-server`: pipeline completo do servidor (ícone + electron-builder + `payload-server/`).
 - `npm run build:deploy-wizard -w agent`: compila o wizard via Inno Setup em `agent/installer/publish/DeskLinkDeployWizard.exe`.
-- `npm run pack:wizard -w agent`: pipeline completo (host + payload + wizard).
-- O wizard roda sem admin, atualiza arquivos no diretório escolhido e cria atalho se ainda não existir.
-- Não há desinstalador dedicado: remover pasta/atalho manualmente quando necessário.
+
+O wizard roda sem admin, atualiza arquivos no diretório escolhido e cria atalho na Área de Trabalho **somente se ainda não existir** (Host: `DeskLink Host`, Server: `DeskLink Server`). Não há desinstalador dedicado: remover pasta/atalho manualmente quando necessário.
+
+> **Reinstalação inteligente:** ao ser executado em uma máquina onde já houve uma instalação anterior, o wizard detecta automaticamente os atalhos existentes (Host e/ou Servidor) e pré-seleciona o papel correspondente, preenchendo o diretório de destino com o caminho já instalado. Se ambos estiverem presentes, o Host é pré-selecionado por padrão.
+
+> **Atalho com ícone antigo:** se o atalho já existia antes de uma atualização de ícone, apague-o manualmente e reexecute o wizard — o instalador não sobrescreve atalhos existentes.
 
 ---
 
@@ -227,7 +276,7 @@ Validação recomendada antes de publicar release:
 
 1. `npm install`
 2. `npm run build`
-3. `npm run pack:wizard -w agent` (ou `desklink-build-agent.bat`)
+3. `desklink-build-agent.bat` (ou equivalente NPM)
 4. Validar manualmente:
    - conexão host/controlador;
    - troca de monitor remoto (`F8`);
@@ -237,7 +286,9 @@ Validação recomendada antes de publicar release:
    - endpoint `GET /api/brand-icon`;
    - reconexão do controlador (desconectar e conectar de novo com host ainda compartilhando): um clique = um clique no host;
    - várias reconexões seguidas na mesma aba do navegador (sem cliques/teclas duplicados);
-   - queda simulada de rede com modificador pressionado (ex.: Shift): após reconectar, tecla não deve ficar presa no host.
+   - queda simulada de rede com modificador pressionado (ex.: Shift): após reconectar, tecla não deve ficar presa no host;
+   - `DeskLinkServer.exe`: inicialização do servidor embutido, exibição do túnel URL, abertura no navegador e ícone distinto do Host (atalho e executável);
+   - wizard em máquina com instalação prévia: papel e diretório pré-preenchidos corretamente para Host e para Servidor.
 
 ---
 
@@ -251,6 +302,9 @@ Validação recomendada antes de publicar release:
 - Controle não atua em tela UAC/elevada: limitação conhecida de contexto no Windows.
 - Logo/favicon não aparece no controlador: valide a existência de `agent/build/icon.png` no ambiente do servidor.
 - Falha em dependências nativas no install: instalar Build Tools C++ no Windows.
+- `DeskLinkServer.exe` não encontra `cloudflared`: certifique-se de que `cloudflared.exe` está na pasta de recursos do app (veja nota acima) ou instalado no `PATH` do sistema.
+- Build falha com `EBUSY` ao preparar payload: feche `DeskLinkHost.exe` e `DeskLinkServer.exe` (o `desklink-build-agent.bat` já tenta encerrá-los antes do empacotamento).
+- Atalho `DeskLink Server` com ícone do Host: apague o atalho antigo na Área de Trabalho e reinstale; o wizard não recria atalhos existentes.
 
 ---
 
@@ -260,7 +314,8 @@ Validação recomendada antes de publicar release:
 |-------|----------|
 | `server/` | API HTTP, Socket.io, salas por UUID, endpoint ICE |
 | `client/` | SPA do controlador |
-| `agent/` | Electron host, preload, renderer, empacotamento |
+| `agent/` | Electron host, preload, renderer, empacotamento, ícones (`build/icon.png`) e wizard de instalação |
+| `agent-server/` | Electron servidor, preload, renderer, ícones (`build/icon.png`), gerencia servidor embutido + túnel Cloudflare |
 
 ---
 

@@ -3,7 +3,7 @@
  */
 export type StreamProfileId = "economy" | "balanced" | "high";
 
-export type StreamProfileEncoding = {
+type StreamProfileEncoding = {
   maxFramerate?: number;
   maxBitrate?: number;
   scaleResolutionDownBy?: number;
