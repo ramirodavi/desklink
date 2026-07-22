@@ -349,7 +349,7 @@ Contribuições são bem-vindas via issue e pull request. Para ajudar no review:
 
 ## 📄 Licença
 
-Projeto de código aberto para fins educacionais ou uso pessoal. Contribuições são bem-vindas.
+Este projeto está licenciado sob os termos da [Licença MIT](LICENSE). Contribuições são bem-vindas.
 
 ---
 
