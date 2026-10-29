@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+type DisplayRect = { x: number; y: number; width: number; height: number };
+
 type DesktopSource = {
   id: string;
   name: string;
   displayId: number | null;
-  bounds: { x: number; y: number; width: number; height: number } | null;
+  /** DIP: overlay de anotações (BrowserWindow.setBounds). */
+  bounds: DisplayRect | null;
+  /** Pixels físicos: SetCursorPos no controle remoto. */
+  inputBounds: DisplayRect | null;
 };
 
 contextBridge.exposeInMainWorld("desklink", {

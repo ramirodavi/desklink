@@ -10,6 +10,8 @@ import {
   nativeImage,
   Notification,
   screen,
+  type Display,
+  type Rectangle,
 } from "electron";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -407,6 +409,46 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+type DisplayRect = { x: number; y: number; width: number; height: number };
+
+function roundDisplayRect(rect: Rectangle): DisplayRect {
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  };
+}
+
+/**
+ * Retângulo em pixels físicos para SetCursorPos.
+ * display.bounds do Electron é DIP; com escala ≠ 100% os dois divergem.
+ */
+function physicalInputBounds(display: Display): DisplayRect {
+  const dip = display.bounds;
+  if (process.platform !== "win32") {
+    return {
+      x: dip.x,
+      y: dip.y,
+      width: dip.width,
+      height: dip.height,
+    };
+  }
+  const sf = display.scaleFactor || 1;
+  const converted = screen.dipToScreenRect(null, dip);
+  const expectedW = dip.width * sf;
+  if (Math.abs(converted.width - expectedW) <= 2) {
+    return roundDisplayRect(converted);
+  }
+  const origin = screen.dipToScreenPoint({ x: dip.x, y: dip.y });
+  return {
+    x: Math.round(origin.x),
+    y: Math.round(origin.y),
+    width: Math.max(1, Math.round(dip.width * sf)),
+    height: Math.max(1, Math.round(dip.height * sf)),
+  };
+}
+
 ipcMain.handle("desktop-sources", async () => {
   const displays = screen.getAllDisplays();
   const sources = await desktopCapturer.getSources({
@@ -419,18 +461,20 @@ ipcMain.handle("desktop-sources", async () => {
     const display = Number.isFinite(displayId)
       ? displays.find((d) => d.id === displayId)
       : undefined;
+    const bounds: DisplayRect | null = display
+      ? {
+          x: display.bounds.x,
+          y: display.bounds.y,
+          width: display.bounds.width,
+          height: display.bounds.height,
+        }
+      : null;
     return {
       id: s.id,
       name: s.name,
       displayId: Number.isFinite(displayId) ? displayId : null,
-      bounds: display
-        ? {
-            x: display.bounds.x,
-            y: display.bounds.y,
-            width: display.bounds.width,
-            height: display.bounds.height,
-          }
-        : null,
+      bounds,
+      inputBounds: display ? physicalInputBounds(display) : null,
     };
   });
 });

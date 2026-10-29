@@ -30,11 +30,16 @@ declare global {
   }
 }
 
+type DisplayRect = { x: number; y: number; width: number; height: number };
+
 type DesktopSource = {
   id: string;
   name: string;
   displayId: number | null;
-  bounds: { x: number; y: number; width: number; height: number } | null;
+  /** DIP: overlay de anotações. */
+  bounds: DisplayRect | null;
+  /** Pixels físicos: posição do mouse remoto. */
+  inputBounds: DisplayRect | null;
 };
 
 const CLIP_MAX_CHARS = 256 * 1024;
@@ -609,7 +614,7 @@ function wireControlChannel(channel: RTCDataChannel) {
 
 async function applyActiveSourceBounds() {
   const src = desktopSources[activeSourceIdx];
-  await window.desklink.setActiveDisplayBounds(src?.bounds ?? null);
+  await window.desklink.setActiveDisplayBounds(src?.inputBounds ?? null);
 }
 
 async function createDesktopStream(sourceId: string): Promise<MediaStream> {

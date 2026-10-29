@@ -5,6 +5,7 @@ import type { ControlMsg } from "./protocol.js";
 import { codeToKey } from "./keymap.js";
 
 let inited = false;
+/** Pixels físicos do monitor compartilhado (SetCursorPos). */
 let activeDisplayBounds: { x: number; y: number; width: number; height: number } | null =
   null;
 const pressedButtons = new Set<Button>();
