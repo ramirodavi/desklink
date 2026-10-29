@@ -1036,7 +1036,7 @@ btnShare.addEventListener("click", async () => {
     await startHostWebRtcFromStream(stream, iceServers);
     const monitorHint =
       desktopSources.length > 1
-        ? " Use F8 no controlador para alternar monitor."
+        ? " Use Shift+F8 no controlador para alternar monitor."
         : "";
     setStatus(
       `Compartilhando ${first.name}. Aguardando controlador e permissão WebRTC.${monitorHint}`,

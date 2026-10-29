@@ -17,6 +17,11 @@ export type ControlMsg =
       alt: boolean;
       shift: boolean;
       meta: boolean;
+      /**
+       * Texto já resolvido no controlador (layout/acentos de quem controla), digitado via Unicode
+       * no host. `""` = enviar a tecla física (`code`). Ausente em controladores antigos.
+       */
+      text?: string;
     }
   /** Sincronização de clipboard (texto); só o controlador envia `sync`. */
   | { t: "clip"; d: "sync"; enabled: boolean }

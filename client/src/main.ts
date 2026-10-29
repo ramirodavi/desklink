@@ -91,19 +91,19 @@ app.innerHTML = `
           <input type="checkbox" id="clipboardSync" />
           Sincronizar área de transferência
         </label>
-        <label class="pen-mode-label" title="Desenhar anotações vermelhas na tela remota do host (atalho F9). Enquanto ativo, o mouse não controla o PC remoto.">
+        <label class="pen-mode-label" title="Desenhar anotações vermelhas na tela remota do host (atalho Shift+F9). Enquanto ativo, o mouse não controla o PC remoto.">
           <input type="checkbox" id="penModeCheckbox" />
           Modo caneta (anotações no host)
         </label>
-        <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela (F10)">Focar na tela remota</button>
-        <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia da área remota (F11; alguns navegadores reservam F11)">Tela cheia</button>
+        <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela (Shift+F10)">Focar na tela remota</button>
+        <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia da área remota (Shift+F11)">Tela cheia</button>
       </div>
     </div>
     <div class="shortcut-panel" id="shortcutPanel">
       <div class="shortcut-panel-head">
         <span class="shortcut-panel-title">Atalhos no PC remoto</span>
         <span class="shortcut-panel-hint">Envia o comando direto ao host (útil quando Win+… não chega pelo teclado local).</span>
-        <span class="shortcut-panel-hint">Teclas rápidas: <kbd>F6</kbd> (sincronizar área de transferência), <kbd>F7</kbd> (habilitar controle remoto), <kbd>F8</kbd> (alternar monitor), <kbd>F9</kbd> (modo caneta / anotações no host), <kbd>F10</kbd> (focar tela remota), <kbd>F11</kbd> (tela cheia da área remota).</span>
+        <span class="shortcut-panel-hint">Teclas rápidas (com <kbd>Shift</kbd>): <kbd>Shift+F6</kbd> (sincronizar área de transferência), <kbd>Shift+F7</kbd> (habilitar controle remoto), <kbd>Shift+F8</kbd> (alternar monitor), <kbd>Shift+F9</kbd> (modo caneta / anotações no host), <kbd>Shift+F10</kbd> (focar tela remota), <kbd>Shift+F11</kbd> (tela cheia da área remota). Fx sem Shift é enviada ao host.</span>
       </div>
       <div class="shortcut-groups">
         <div class="shortcut-group">
@@ -564,14 +564,65 @@ function toggleCheckboxByHotkey(
   setConnStatus(checkbox.checked ? onText : offText);
 }
 
-function hasNoModifiers(ev: KeyboardEvent): boolean {
-  return !ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey;
+/** Teclas enviadas como texto (Unicode) no keydown; o keyup correspondente não é repassado. */
+const textKeyCodes = new Set<string>();
+
+function isPrintableKey(key: string): boolean {
+  if (!key || key === "Dead" || key === "Unidentified") return false;
+  // Nomes de tecla (Enter, ArrowLeft, F5…) são ASCII iniciando em maiúscula; o resto é caractere.
+  return [...key].length === 1 || !/^[A-Z][A-Za-z0-9]*$/.test(key);
 }
 
+/**
+ * Caractere que o layout do controlador produziu (inclui acentos compostos e AltGr) para o host
+ * digitar via Unicode. `""` = repassar a tecla física: atalhos com Ctrl/Alt/Win, teclas nomeadas,
+ * espaço e letras sem acento (mantém repetição/atalhos de apps que leem a tecla).
+ */
+function resolveKeyText(ev: KeyboardEvent): string {
+  if (!isPrintableKey(ev.key)) return "";
+  const altGraph = ev.getModifierState("AltGraph");
+  if ((ev.ctrlKey || ev.altKey || ev.metaKey) && !altGraph) return "";
+  if (ev.code === "Space" && ev.key === " ") return "";
+  const letter = /^Key([A-Z])$/.exec(ev.code);
+  if (letter && !altGraph && ev.key.toUpperCase() === letter[1]) return "";
+  return ev.key;
+}
+
+/** Atalhos do DeskLink usam Shift+Fx; Fx sozinho (ou com outros modificadores) vai para o host. */
+function isHotkeyModifier(ev: KeyboardEvent): boolean {
+  return ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey;
+}
+
+const HOTKEY_CODES = new Set([
+  HOTKEY_TOGGLE_CLIPBOARD_SYNC,
+  HOTKEY_TOGGLE_REMOTE_CONTROL,
+  HOTKEY_NEXT_MONITOR,
+  HOTKEY_TOGGLE_PEN_MODE,
+  HOTKEY_FOCUS_REMOTE,
+  HOTKEY_TOGGLE_FULLSCREEN,
+]);
+
+/** Fx cujo keydown virou atalho local: o keyup correspondente também não vai ao host. */
+const consumedHotkeyCodes = new Set<string>();
+
 function handleGlobalFunctionHotkeys(ev: KeyboardEvent): boolean {
+  if (ev.type === "keyup") {
+    if (!consumedHotkeyCodes.delete(ev.code)) return false;
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
   if (ev.type !== "keydown") return false;
+  consumedHotkeyCodes.delete(ev.code);
   if (remotePanel.classList.contains("hidden")) return false;
-  if (!hasNoModifiers(ev)) return false;
+  if (!isHotkeyModifier(ev)) return false;
+  if (!HOTKEY_CODES.has(ev.code)) return false;
+  consumedHotkeyCodes.add(ev.code);
+  if (ev.repeat) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
 
   if (ev.code === HOTKEY_TOGGLE_CLIPBOARD_SYNC) {
     ev.preventDefault();
@@ -905,6 +956,7 @@ function teardownControlCapture() {
   window.removeEventListener("keyup", h.keyHandler, true);
   controlCaptureHandlers = null;
   captureKeys = false;
+  textKeyCodes.clear();
   releaseOverlayPointerCapture();
   resetWheelState();
 }
@@ -1242,7 +1294,7 @@ function setPenMode(on: boolean) {
   remoteWrap.classList.toggle("pen-mode", on);
   setConnStatus(
     on
-      ? "Modo caneta (F9): desenhe no vídeo — traço aparece no host. O mouse não controla o remoto."
+      ? "Modo caneta (Shift+F9): desenhe no vídeo — traço aparece no host. O mouse não controla o remoto."
       : "Modo caneta desligado; anotações no host foram limpas.",
   );
 }
@@ -1571,15 +1623,28 @@ function setupControlChannel(channel: RTCDataChannel) {
     if (!controlSend || controlSend.readyState !== "open") return;
     ev.preventDefault();
     ev.stopPropagation();
+    // Acento "morto" (´ ` ~ ^ ¨): o navegador compõe e entrega o caractere final no próximo keydown.
+    // Não repassar evita deixar o host com um acento pendente no layout dele.
+    if (ev.key === "Dead") return;
+    const down = ev.type === "keydown";
+    let text = "";
+    if (down) {
+      text = resolveKeyText(ev);
+      if (text) textKeyCodes.add(ev.code);
+      else textKeyCodes.delete(ev.code);
+    } else if (textKeyCodes.delete(ev.code)) {
+      return;
+    }
     const msg: ControlMsg = {
       t: "key",
       code: ev.code,
       key: ev.key,
-      down: ev.type === "keydown",
+      down,
       ctrl: ev.ctrlKey,
       alt: ev.altKey,
       shift: ev.shiftKey,
       meta: ev.metaKey,
+      text,
     };
     controlSend.send(JSON.stringify(msg));
   };

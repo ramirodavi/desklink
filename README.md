@@ -12,8 +12,8 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 
 - Streaming de tela com WebRTC.
 - Controle remoto de mouse e teclado.
-- Troca de monitor remoto em hosts com múltiplos displays (`F8` no controlador).
-- Modo **caneta** no controlador (`F9` ou checkbox): desenha anotações vermelhas que aparecem como overlay no host, sem mover o mouse remoto enquanto o modo estiver ativo.
+- Troca de monitor remoto em hosts com múltiplos displays (`Shift+F8` no controlador).
+- Modo **caneta** no controlador (`Shift+F9` ou checkbox): desenha anotações vermelhas que aparecem como overlay no host, sem mover o mouse remoto enquanto o modo estiver ativo.
 - Modo somente visualização (desabilita envio de input).
 - Sincronização opcional de clipboard (texto) entre controlador e host.
 - Ajuste de sensibilidade de rolagem em tempo real (baixa/média/alta).
@@ -125,8 +125,9 @@ npm run dev -w agent-server
 
 - Clique na área remota para capturar mouse/teclado no controlador.
 - "Habilitar controle remoto" desmarca para modo somente visualização.
-- `F8` (ou botão de monitor) alterna monitor remoto ativo quando houver múltiplos displays.
-- Atalhos no **controlador** (sem Ctrl/Alt/Shift/Meta, com o painel remoto visível): `F6` alterna sincronização de clipboard; `F7` alterna "Habilitar controle remoto"; `F8` solicita troca de monitor no host; `F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `F10` foca a área remota na página; `F11` alterna **tela cheia** da área remota. **Nota:** em alguns navegadores `F11` é capturada para tela cheia global da aba; use o botão **Tela cheia** se o atalho não responder. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
+- `Shift+F8` (ou botão de monitor) alterna monitor remoto ativo quando houver múltiplos displays.
+- Atalhos no **controlador** (`Shift+Fx`, sem Ctrl/Alt/Meta, com o painel remoto visível): `Shift+F6` alterna sincronização de clipboard; `Shift+F7` alterna "Habilitar controle remoto"; `Shift+F8` solicita troca de monitor no host; `Shift+F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `Shift+F10` foca a área remota na página; `Shift+F11` alterna **tela cheia** da área remota. `F1`–`F12` sem Shift (ou com Ctrl/Alt) são enviadas normalmente ao host. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
+- Teclado: caracteres (inclusive acentos `´ ` ~ ^ ¨` e AltGr) são resolvidos pelo layout do **controlador** e digitados no host via Unicode, sem trocar o idioma do host; atalhos com Ctrl/Alt/Win, teclas especiais e letras sem acento seguem como tecla física.
 - A rolagem usa normalização e coalescência para reduzir picos de eventos.
 - O seletor de sensibilidade de rolagem aplica sem reconectar (baixa/média/alta).
 - **Conexão e rede (só no controlador):** acima dos atalhos aparecem pills com o estado **ICE** (negociação WebRTC), o **caminho** estimado (rede local, NAT na internet ou **relay via TURN**) e uma linha de **métricas** (RTT aproximado, fps recebido, perda de pacotes e qualidade *Boa / Instável / Ruim*). Passe o mouse para ver dicas em português. Se a conexão falhar com frequência entre redes diferentes, confira TURN no servidor (`METERED_*` ou `ICE_SERVERS_JSON`).
@@ -279,7 +280,7 @@ Validação recomendada antes de publicar release:
 3. `desklink-build-agent.bat` (ou equivalente NPM)
 4. Validar manualmente:
    - conexão host/controlador;
-   - troca de monitor remoto (`F8`);
+   - troca de monitor remoto (`Shift+F8`);
    - rolagem em baixa/média/alta;
    - clipboard opcional habilitado;
    - chat (envio com `Enter`, quebra com `Shift+Enter`, emojis e notificações em segundo plano);

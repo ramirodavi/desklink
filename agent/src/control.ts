@@ -114,6 +114,23 @@ function isLetterCode(code: string): boolean {
   return /^Key[A-Z]$/.test(code);
 }
 
+/** Texto a digitar via Unicode no host; `null` = pressionar a tecla física (`code`). */
+function textToType(msg: Extract<ControlMsg, { t: "key" }>): string | null {
+  if (typeof msg.text === "string") return msg.text || null;
+  // Controladores antigos: deduz pelo caractere enviado.
+  const textKey = typeof msg.key === "string" ? msg.key : "";
+  if (
+    textKey.length === 1 &&
+    !isLetterCode(msg.code) &&
+    !msg.ctrl &&
+    !msg.alt &&
+    !msg.meta
+  ) {
+    return textKey;
+  }
+  return null;
+}
+
 function clampWheelSteps(v: number): number {
   if (!Number.isFinite(v)) return 0;
   const n = Math.trunc(v);
@@ -198,27 +215,10 @@ export async function applyControlJson(json: string): Promise<void> {
       break;
     }
     case "key": {
-      const textKey = typeof msg.key === "string" ? msg.key : "";
-      if (
-        msg.down &&
-        textKey.length === 1 &&
-        !isLetterCode(msg.code) &&
-        !msg.ctrl &&
-        !msg.alt &&
-        !msg.meta
-      ) {
-        // Usa o caractere já resolvido no cliente para respeitar layout/idioma de teclado.
-        await keyboard.type(textKey);
-        break;
-      }
-      if (
-        !msg.down &&
-        textKey.length === 1 &&
-        !isLetterCode(msg.code) &&
-        !msg.ctrl &&
-        !msg.alt &&
-        !msg.meta
-      ) {
+      const text = textToType(msg);
+      if (text !== null) {
+        // Digita via Unicode: respeita o layout de quem controla sem trocar o idioma do host.
+        if (msg.down) await keyboard.type(text);
         break;
       }
       const k = codeToKey(msg.code);
