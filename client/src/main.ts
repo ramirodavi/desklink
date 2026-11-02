@@ -1,9 +1,14 @@
 import { io, type Socket } from "socket.io-client";
 import { CHAT_EMOJI_GROUPS } from "./chat-emoji-data.js";
+import {
+  createCommandPalette,
+  type PaletteCommand,
+} from "./command-palette.js";
 import type { ControlMsg } from "./protocol.js";
 import { parseStreamProfileId } from "./stream-profiles.js";
 import {
   runShortcutSequence,
+  SHORTCUT_LABELS,
   SHORTCUT_SEQUENCES,
 } from "./shortcuts.js";
 import {
@@ -97,13 +102,14 @@ app.innerHTML = `
         </label>
         <button type="button" class="btn-ghost" id="btnFocusRemote" title="Rola a página para a área remota ocupar a janela (Shift+F10)">Focar na tela remota</button>
         <button type="button" class="btn-ghost" id="btnFullscreen" title="Tela cheia da área remota (Shift+F11)">Tela cheia</button>
+        <button type="button" class="btn-ghost" id="btnCommandPalette" title="Buscar e executar comandos e atalhos (Shift+F12)">Comandos <kbd>Shift+F12</kbd></button>
       </div>
     </div>
     <div class="shortcut-panel" id="shortcutPanel">
       <div class="shortcut-panel-head">
         <span class="shortcut-panel-title">Atalhos no PC remoto</span>
         <span class="shortcut-panel-hint">Envia o comando direto ao host (útil quando Win+… não chega pelo teclado local).</span>
-        <span class="shortcut-panel-hint">Teclas rápidas (com <kbd>Shift</kbd>): <kbd>Shift+F6</kbd> (sincronizar área de transferência), <kbd>Shift+F7</kbd> (habilitar controle remoto), <kbd>Shift+F8</kbd> (alternar monitor), <kbd>Shift+F9</kbd> (modo caneta / anotações no host), <kbd>Shift+F10</kbd> (focar tela remota), <kbd>Shift+F11</kbd> (tela cheia da área remota). Fx sem Shift é enviada ao host.</span>
+        <span class="shortcut-panel-hint">Teclas rápidas (com <kbd>Shift</kbd>): <kbd>Shift+F6</kbd> (sincronizar área de transferência), <kbd>Shift+F7</kbd> (habilitar controle remoto), <kbd>Shift+F8</kbd> (alternar monitor), <kbd>Shift+F9</kbd> (modo caneta / anotações no host), <kbd>Shift+F10</kbd> (focar tela remota), <kbd>Shift+F11</kbd> (tela cheia da área remota), <kbd>Shift+F12</kbd> (paleta de comandos). Fx sem Shift é enviada ao host.</span>
       </div>
       <div class="shortcut-groups">
         <div class="shortcut-group">
@@ -181,6 +187,7 @@ const monitorIndicator = $("#monitorIndicator") as HTMLButtonElement;
 const remoteStage = $("#remoteStage") as HTMLDivElement;
 const btnFocusRemote = $("#btnFocusRemote") as HTMLButtonElement;
 const btnFullscreen = $("#btnFullscreen") as HTMLButtonElement;
+const btnCommandPalette = $("#btnCommandPalette") as HTMLButtonElement;
 const shortcutPanel = $("#shortcutPanel");
 const clipboardSyncCheckbox = $("#clipboardSync") as HTMLInputElement;
 const remoteControlCheckbox = $("#remoteControlEnabled") as HTMLInputElement;
@@ -273,6 +280,7 @@ const HOTKEY_NEXT_MONITOR = "F8";
 const HOTKEY_TOGGLE_PEN_MODE = "F9";
 const HOTKEY_FOCUS_REMOTE = "F10";
 const HOTKEY_TOGGLE_FULLSCREEN = "F11";
+const HOTKEY_COMMAND_PALETTE = "F12";
 const monitorIndicatorLabel = monitorIndicator.querySelector(
   ".monitor-indicator-label",
 ) as HTMLSpanElement;
@@ -564,6 +572,53 @@ function toggleCheckboxByHotkey(
   setConnStatus(checkbox.checked ? onText : offText);
 }
 
+function toggleClipboardSyncByUser() {
+  toggleCheckboxByHotkey(
+    clipboardSyncCheckbox,
+    "Sincronização da área de transferência ativada.",
+    "Sincronização da área de transferência desativada.",
+  );
+}
+
+function toggleRemoteControlByUser() {
+  toggleCheckboxByHotkey(
+    remoteControlCheckbox,
+    "Controle remoto ativado.",
+    "Controle remoto desativado (modo visualização).",
+  );
+}
+
+/** Teclas físicas cujo keydown foi ao host e ainda aguardam keyup. */
+const heldRemoteKeyCodes = new Set<string>();
+
+/**
+ * Solta no host as teclas ainda pressionadas (ex.: o Shift de Shift+F12) antes de a paleta
+ * passar a reter o teclado; sem isso o keyup se perde e a tecla fica presa no remoto.
+ */
+function releaseHeldRemoteKeys() {
+  const codes = [...heldRemoteKeyCodes];
+  heldRemoteKeyCodes.clear();
+  if (!controlSend || controlSend.readyState !== "open") return;
+  for (const code of codes) {
+    const msg: ControlMsg = {
+      t: "key",
+      code,
+      key: "",
+      down: false,
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: false,
+      text: "",
+    };
+    try {
+      controlSend.send(JSON.stringify(msg));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Teclas enviadas como texto (Unicode) no keydown; o keyup correspondente não é repassado. */
 const textKeyCodes = new Set<string>();
 
@@ -600,6 +655,7 @@ const HOTKEY_CODES = new Set([
   HOTKEY_TOGGLE_PEN_MODE,
   HOTKEY_FOCUS_REMOTE,
   HOTKEY_TOGGLE_FULLSCREEN,
+  HOTKEY_COMMAND_PALETTE,
 ]);
 
 /** Fx cujo keydown virou atalho local: o keyup correspondente também não vai ao host. */
@@ -627,22 +683,14 @@ function handleGlobalFunctionHotkeys(ev: KeyboardEvent): boolean {
   if (ev.code === HOTKEY_TOGGLE_CLIPBOARD_SYNC) {
     ev.preventDefault();
     ev.stopPropagation();
-    toggleCheckboxByHotkey(
-      clipboardSyncCheckbox,
-      "Sincronização da área de transferência ativada.",
-      "Sincronização da área de transferência desativada.",
-    );
+    toggleClipboardSyncByUser();
     return true;
   }
 
   if (ev.code === HOTKEY_TOGGLE_REMOTE_CONTROL) {
     ev.preventDefault();
     ev.stopPropagation();
-    toggleCheckboxByHotkey(
-      remoteControlCheckbox,
-      "Controle remoto ativado.",
-      "Controle remoto desativado (modo visualização).",
-    );
+    toggleRemoteControlByUser();
     return true;
   }
 
@@ -672,6 +720,13 @@ function handleGlobalFunctionHotkeys(ev: KeyboardEvent): boolean {
     ev.preventDefault();
     ev.stopPropagation();
     btnFullscreen.click();
+    return true;
+  }
+
+  if (ev.code === HOTKEY_COMMAND_PALETTE) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    commandPalette.toggle();
     return true;
   }
   return false;
@@ -957,6 +1012,7 @@ function teardownControlCapture() {
   controlCaptureHandlers = null;
   captureKeys = false;
   textKeyCodes.clear();
+  heldRemoteKeyCodes.clear();
   releaseOverlayPointerCapture();
   resetWheelState();
 }
@@ -1022,6 +1078,7 @@ function disconnectAll() {
   captureKeys = false;
   remoteVideo.srcObject = null;
   remotePanel.classList.add("hidden");
+  commandPalette.close();
   closeClientChatEmojiPopover();
   clearClientChatLog();
   btnConnect.disabled = false;
@@ -1192,18 +1249,11 @@ window.addEventListener(
   true,
 );
 
-shortcutPanel.addEventListener("click", (ev) => {
+function sendShortcutById(id: string) {
   if (!remoteControlEnabled) {
     setConnStatus("Modo de visualização ativo: marque 'Habilitar controle remoto' para usar atalhos.");
     return;
   }
-  const btn = (ev.target as HTMLElement).closest(
-    "button[data-shortcut]",
-  ) as HTMLButtonElement | null;
-  if (!btn) return;
-  ev.preventDefault();
-  const id = btn.getAttribute("data-shortcut");
-  if (!id) return;
   const seq = SHORTCUT_SEQUENCES[id];
   if (!seq?.length) return;
   if (!controlSend || controlSend.readyState !== "open") {
@@ -1215,6 +1265,153 @@ shortcutPanel.addEventListener("click", (ev) => {
       setConnStatus("Falha ao enviar atalho.");
     },
   );
+}
+
+shortcutPanel.addEventListener("click", (ev) => {
+  const btn = (ev.target as HTMLElement).closest(
+    "button[data-shortcut]",
+  ) as HTMLButtonElement | null;
+  if (!btn) return;
+  ev.preventDefault();
+  const id = btn.getAttribute("data-shortcut");
+  if (id) sendShortcutById(id);
+});
+
+/** Altera um <select> da barra como se o usuário tivesse escolhido (dispara o mesmo `change`). */
+function chooseSelectOption(select: HTMLSelectElement, value: string) {
+  if (select.value === value) return;
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function focusChatInput() {
+  const go = () => {
+    chatPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    chatInput.focus({ preventScroll: true });
+  };
+  // O chat fica fora da área em tela cheia.
+  if (document.fullscreenElement) {
+    void document.exitFullscreen().then(go, go);
+  } else {
+    go();
+  }
+}
+
+function buildPaletteCommands(): PaletteCommand[] {
+  const session: PaletteCommand[] = [
+    {
+      id: "monitor-next",
+      group: "Sessão",
+      title: "Alternar monitor remoto",
+      keywords: "tela display",
+      hint: "Shift+F8",
+      run: requestNextMonitorByUi,
+    },
+    {
+      id: "pen-toggle",
+      group: "Sessão",
+      title: () => (penMode ? "Desativar modo caneta" : "Ativar modo caneta (anotações no host)"),
+      keywords: "desenhar anotar pen",
+      hint: "Shift+F9",
+      run: () => setPenMode(!penMode),
+    },
+    {
+      id: "remote-control-toggle",
+      group: "Sessão",
+      title: () =>
+        remoteControlEnabled
+          ? "Desativar controle remoto (só visualizar)"
+          : "Ativar controle remoto",
+      keywords: "visualizacao view only mouse teclado",
+      hint: "Shift+F7",
+      run: toggleRemoteControlByUser,
+    },
+    {
+      id: "clipboard-toggle",
+      group: "Sessão",
+      title: () =>
+        clientClipboardSync
+          ? "Desativar sincronização da área de transferência"
+          : "Ativar sincronização da área de transferência",
+      keywords: "clipboard copiar colar",
+      hint: "Shift+F6",
+      run: toggleClipboardSyncByUser,
+    },
+    {
+      id: "focus-remote",
+      group: "Sessão",
+      title: "Focar na tela remota",
+      hint: "Shift+F10",
+      run: () => {
+        btnFocusRemote.click();
+        setConnStatus("Tela remota em foco.");
+      },
+    },
+    {
+      id: "fullscreen-toggle",
+      group: "Sessão",
+      title: () => (document.fullscreenElement ? "Sair da tela cheia" : "Tela cheia"),
+      keywords: "fullscreen",
+      hint: "Shift+F11",
+      run: () => btnFullscreen.click(),
+    },
+    {
+      id: "chat-focus",
+      group: "Sessão",
+      title: "Escrever no chat",
+      keywords: "mensagem conversa",
+      run: focusChatInput,
+    },
+    {
+      id: "disconnect",
+      group: "Sessão",
+      title: "Desconectar",
+      keywords: "sair encerrar",
+      run: () => btnDisconnect.click(),
+    },
+  ];
+
+  const remote: PaletteCommand[] = Object.entries(SHORTCUT_LABELS).map(
+    ([id, l]) => ({
+      id: `shortcut-${id}`,
+      group: "PC remoto",
+      title: l.title,
+      keywords: l.keywords,
+      hint: l.keys,
+      run: () => sendShortcutById(id),
+    }),
+  );
+
+  const optionCommands = (
+    select: HTMLSelectElement,
+    idPrefix: string,
+    group: string,
+    keywords: string,
+  ): PaletteCommand[] =>
+    [...select.options].map((opt) => ({
+      id: `${idPrefix}-${opt.value}`,
+      group,
+      title: () =>
+        `${group}: ${opt.text}${select.value === opt.value ? " (atual)" : ""}`,
+      keywords,
+      run: () => chooseSelectOption(select, opt.value),
+    }));
+
+  return [
+    ...session,
+    ...remote,
+    ...optionCommands(streamProfileSelect, "stream-profile", "Perfil de vídeo", "qualidade bitrate fps banda"),
+    ...optionCommands(wheelSensitivitySelect, "wheel", "Rolagem", "scroll sensibilidade"),
+  ];
+}
+
+const paletteCommands = buildPaletteCommands();
+const commandPalette = createCommandPalette(() => paletteCommands, {
+  onOpen: releaseHeldRemoteKeys,
+});
+
+btnCommandPalette.addEventListener("click", () => {
+  commandPalette.open();
 });
 
 /**
@@ -1617,6 +1814,8 @@ function setupControlChannel(channel: RTCDataChannel) {
 
   const keyHandler = (ev: KeyboardEvent) => {
     if (handleGlobalFunctionHotkeys(ev)) return;
+    // Paleta aberta: as teclas ficam no campo de busca, nada vai ao host.
+    if (commandPalette.isOpen()) return;
     if (!remoteControlEnabled) return;
     if (!monitorSyncReady) return;
     if (!captureKeys || remotePanel.classList.contains("hidden")) return;
@@ -1647,6 +1846,10 @@ function setupControlChannel(channel: RTCDataChannel) {
       text,
     };
     controlSend.send(JSON.stringify(msg));
+    if (!text) {
+      if (down) heldRemoteKeyCodes.add(ev.code);
+      else heldRemoteKeyCodes.delete(ev.code);
+    }
   };
 
   overlay.addEventListener("contextmenu", onContextMenu, true);

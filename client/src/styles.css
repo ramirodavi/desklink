@@ -847,6 +847,131 @@ button.emoji-popover-cell:hover:not(:disabled) {
   border-color: rgba(79, 143, 247, 0.35);
 }
 
+/* Atalho exibido dentro de botões da barra (ex.: "Comandos Shift+F12") */
+.remote-toolbar-actions .btn-ghost kbd,
+.command-palette kbd {
+  display: inline-block;
+  padding: 0.05rem 0.38rem;
+  border-radius: 0.34rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 16, 30, 0.85);
+  color: #e7efff;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  font-weight: 700;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  white-space: nowrap;
+}
+
+.remote-toolbar-actions .btn-ghost kbd {
+  margin-left: 0.35rem;
+}
+
+/* Paleta de comandos (Shift+F12) */
+.command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(4, 8, 18, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.command-palette-dialog {
+  width: min(560px, 100%);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid #2f3d55;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  color: var(--text);
+}
+
+.command-palette input.command-palette-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 1px solid #2a3548;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.85rem 1rem;
+  font-size: 1rem;
+}
+
+.command-palette input.command-palette-input:focus {
+  border-color: #2a3548;
+  box-shadow: none;
+}
+
+.command-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  overflow-y: auto;
+}
+
+.command-palette-group {
+  padding: 0.55rem 0.65rem 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.command-palette-item.is-active {
+  background: rgba(79, 143, 247, 0.18);
+  outline: 1px solid rgba(79, 143, 247, 0.4);
+}
+
+.command-palette-item-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.command-palette-item-group {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.command-palette-empty {
+  padding: 1rem 0.65rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.command-palette-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid #2a3548;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.command-palette-footer kbd {
+  margin-right: 0.2rem;
+}
+
 .hidden {
   display: none !important;
 }

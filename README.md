@@ -13,6 +13,7 @@ DeskLink é um projeto de acesso remoto em tempo real: um PC compartilha a tela 
 - Streaming de tela com WebRTC.
 - Controle remoto de mouse e teclado.
 - Troca de monitor remoto em hosts com múltiplos displays (`Shift+F8` no controlador).
+- **Paleta de comandos** no controlador (`Shift+F12` ou botão *Comandos*): busca e executa ações da sessão e atalhos do PC remoto sem decorar teclas.
 - Modo **caneta** no controlador (`Shift+F9` ou checkbox): desenha anotações vermelhas que aparecem como overlay no host, sem mover o mouse remoto enquanto o modo estiver ativo.
 - Modo somente visualização (desabilita envio de input).
 - Sincronização opcional de clipboard (texto) entre controlador e host.
@@ -126,7 +127,7 @@ npm run dev -w agent-server
 - Clique na área remota para capturar mouse/teclado no controlador.
 - "Habilitar controle remoto" desmarca para modo somente visualização.
 - `Shift+F8` (ou botão de monitor) alterna monitor remoto ativo quando houver múltiplos displays.
-- Atalhos no **controlador** (`Shift+Fx`, sem Ctrl/Alt/Meta, com o painel remoto visível): `Shift+F6` alterna sincronização de clipboard; `Shift+F7` alterna "Habilitar controle remoto"; `Shift+F8` solicita troca de monitor no host; `Shift+F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `Shift+F10` foca a área remota na página; `Shift+F11` alterna **tela cheia** da área remota. `F1`–`F12` sem Shift (ou com Ctrl/Alt) são enviadas normalmente ao host. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
+- Atalhos no **controlador** (`Shift+Fx`, sem Ctrl/Alt/Meta, com o painel remoto visível): `Shift+F6` alterna sincronização de clipboard; `Shift+F7` alterna "Habilitar controle remoto"; `Shift+F8` solicita troca de monitor no host; `Shift+F9` liga/desliga o **modo caneta** (anotações no host — traço vermelho; enquanto ativo o mouse não envia `move`/cliques/rolagem ao remoto; mesmo efeito que o checkbox **Modo caneta (anotações no host)**); `Shift+F10` foca a área remota na página; `Shift+F11` alterna **tela cheia** da área remota; `Shift+F12` abre a **paleta de comandos** (busca por nome e executa qualquer ação da sessão, atalhos do PC remoto, perfil de vídeo e rolagem; `↑`/`↓` navega, `Enter` executa, `Esc` fecha — também pelo botão **Comandos**). `F1`–`F12` sem Shift (ou com Ctrl/Alt) são enviadas normalmente ao host. Ao desligar o modo caneta ou ao desconectar, as anotações no host são limpas.
 - Teclado: caracteres (inclusive acentos `´ ` ~ ^ ¨` e AltGr) são resolvidos pelo layout do **controlador** e digitados no host via Unicode, sem trocar o idioma do host; atalhos com Ctrl/Alt/Win, teclas especiais e letras sem acento seguem como tecla física.
 - A rolagem usa normalização e coalescência para reduzir picos de eventos.
 - O seletor de sensibilidade de rolagem aplica sem reconectar (baixa/média/alta).

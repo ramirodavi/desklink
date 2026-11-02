@@ -121,6 +121,28 @@ export const SHORTCUT_SEQUENCES: Record<string, ControlMsg[]> = {
   ],
 };
 
+/** Rótulos dos atalhos para a paleta de comandos (mesmas chaves de `SHORTCUT_SEQUENCES`). */
+export const SHORTCUT_LABELS: Record<
+  string,
+  { title: string; keys: string; keywords?: string }
+> = {
+  ctrlC: { title: "Copiar", keys: "Ctrl+C", keywords: "copy" },
+  ctrlV: { title: "Colar", keys: "Ctrl+V", keywords: "paste" },
+  ctrlX: { title: "Recortar", keys: "Ctrl+X", keywords: "cut" },
+  ctrlA: { title: "Selecionar tudo", keys: "Ctrl+A", keywords: "select all" },
+  ctrlZ: { title: "Desfazer", keys: "Ctrl+Z", keywords: "undo" },
+  ctrlY: { title: "Refazer", keys: "Ctrl+Y", keywords: "redo" },
+  winR: { title: "Abrir Executar", keys: "Win+R", keywords: "run comando" },
+  winE: { title: "Abrir Explorador de Arquivos", keys: "Win+E", keywords: "explorer pastas" },
+  winD: { title: "Mostrar área de trabalho", keys: "Win+D", keywords: "desktop minimizar" },
+  winL: { title: "Bloquear o PC remoto", keys: "Win+L", keywords: "lock travar" },
+  winShiftS: { title: "Captura de tela (recorte)", keys: "Win+Shift+S", keywords: "print screenshot" },
+  altTab: { title: "Alternar janela", keys: "Alt+Tab", keywords: "switch trocar" },
+  altF4: { title: "Fechar janela", keys: "Alt+F4", keywords: "close" },
+  ctrlShiftEsc: { title: "Abrir Gerenciador de Tarefas", keys: "Ctrl+Shift+Esc", keywords: "task manager processos" },
+  ctrlAltDel: { title: "Ctrl+Alt+Del", keys: "Ctrl+Alt+Del", keywords: "seguranca senha" },
+};
+
 /** Envia sequência ordenada; pequeno atraso entre passos para o host processar. */
 export async function runShortcutSequence(
   steps: ControlMsg[],
